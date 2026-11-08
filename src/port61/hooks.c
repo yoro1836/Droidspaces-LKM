@@ -275,8 +275,12 @@ static void ds_kp_remove_all(void)
 
 static bool samsung_el2(void)
 {
-	return kallsyms_name_to_addr("exynos_report_el2_crash_info") ||
-		kallsyms_name_to_addr("uh_call");
+	/* exynos_report_el2_crash_info lives in the exynos_el2 vendor module,
+	 * which kallsyms_name_to_addr() deliberately ignores. */
+	if (kr_direct && (kallrecon_klp("exynos_report_el2_crash_info") ||
+			  kallrecon_klp("uh_call")))
+		return true;
+	return kallsyms_name_to_addr("uh_call");
 }
 
 static bool movable_prologue(u32 op)

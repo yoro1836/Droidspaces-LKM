@@ -493,8 +493,22 @@ static unsigned long name_to_addr_linear(const char *name)
 
 unsigned long kallsyms_name_to_addr(const char *name)
 {
-	if (kr_direct)
-		return kallrecon_klp(name);
+	if (kr_direct) {
+		/*
+		 * kallsyms_lookup_name() falls back to module symbols, including
+		 * this module's own (e.g. a ported msg_init_ns) while it is being
+		 * initialized. The table scan only ever saw vmlinux; keep that.
+		 */
+		unsigned long addr = kallrecon_klp(name);
+		bool in_module;
+
+		if (!addr)
+			return 0;
+		preempt_disable();
+		in_module = __module_address(addr) != NULL;
+		preempt_enable();
+		return in_module ? 0 : addr;
+	}
 	if (!klseqs_addr) {
 #ifdef KALLRECON_MODULE_LOOKUP
 		unsigned long addr = name_to_addr_linear(name);

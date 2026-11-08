@@ -8,3 +8,6 @@ uses it directly when found. Samsung Exynos EL2 forbids reads of some
 kernel image pages; the forward scan from sprint_symbol hit one and the
 stage-2 fault reset the device (S5E9945, 6.1.162-android14-11).
 kallrecon_ready() replaces the klnum_val check in callers.
+Direct lookups that land inside any module return 0, matching the
+vmlinux-only table scan (kallsyms_lookup_name() otherwise finds this
+module's own ported symbols such as msg_init_ns during init).
