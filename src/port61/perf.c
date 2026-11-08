@@ -9,6 +9,12 @@ extern struct perf_event *ds_perf_alloc_original(struct perf_event_attr *, int,
 	struct task_struct *, struct perf_event *, struct perf_event *,
 	perf_overflow_handler_t, void *, int);
 extern void ds_perf_free_original(struct rcu_head *);
+/* kprobe mode: direct calls (no kCFI check) into the native function */
+extern bool ds_kprobe_hooks;
+extern struct perf_event *ds_kp_perf_alloc(struct perf_event_attr *, int,
+	struct task_struct *, struct perf_event *, struct perf_event *,
+	perf_overflow_handler_t, void *, int);
+extern void ds_kp_perf_free(struct rcu_head *);
 
 struct ds_perf_ref {
 	struct hlist_node link;
@@ -32,8 +38,12 @@ struct perf_event *ds_perf_event_alloc(struct perf_event_attr *attr, int cpu,
 		if (!ref)
 			return ERR_PTR(-ENOMEM);
 	}
-	event = ds_perf_alloc_original(attr, cpu, task, leader, parent, handler,
-				       context, cgroup_fd);
+	if (ds_kprobe_hooks)
+		event = ds_kp_perf_alloc(attr, cpu, task, leader, parent, handler,
+					 context, cgroup_fd);
+	else
+		event = ds_perf_alloc_original(attr, cpu, task, leader, parent,
+					       handler, context, cgroup_fd);
 	if (IS_ERR(event)) {
 		/* Native allocation failures never enter the ownership table. */
 		kfree(ref);
@@ -64,7 +74,10 @@ void ds_perf_free_event_rcu(struct rcu_head *head)
 		}
 	}
 	spin_unlock_irqrestore(&perf_refs_lock, flags);
-	ds_perf_free_original(head);
+	if (ds_kprobe_hooks)
+		ds_kp_perf_free(head);
+	else
+		ds_perf_free_original(head);
 	if (owned) {
 		put_pid_ns(owned->ns);
 		kfree(owned);

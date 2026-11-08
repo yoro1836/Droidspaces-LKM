@@ -6,6 +6,8 @@
 #include <asm/ptrace.h>
 
 long (*ds_native_reboot)(const struct pt_regs *regs);
+extern bool ds_kprobe_hooks;
+extern long ds_kp_reboot(const struct pt_regs *regs);
 
 asmlinkage long __arm64_sys_ds_reboot(const struct pt_regs *regs)
 {
@@ -14,7 +16,7 @@ asmlinkage long __arm64_sys_ds_reboot(const struct pt_regs *regs)
 	unsigned int cmd = regs->regs[2];
 
 	if (ns == &init_pid_ns)
-		return ds_native_reboot(regs);
+		return ds_kprobe_hooks ? ds_kp_reboot(regs) : ds_native_reboot(regs);
 	if (!ns_capable(ns->user_ns, CAP_SYS_BOOT))
 		return -EPERM;
 	if (magic1 != LINUX_REBOOT_MAGIC1 ||

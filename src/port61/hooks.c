@@ -4,6 +4,8 @@
 #include <linux/module.h>
 #include <linux/stop_machine.h>
 #include <linux/kallsyms.h>
+#include <linux/kprobes.h>
+#include <linux/compat.h>
 #include <linux/pid_namespace.h>
 #include <linux/proc_ns.h>
 #include <linux/fs_context.h>
@@ -177,6 +179,106 @@ static struct ds_hook hooks[] = {
 
 static struct ds_hook proc_hooks[2];
 
+/*
+ * kprobe mode. Samsung EL2 (RKP/uH) rejects writes to the syscall table and
+ * other protected kernel memory, so no entry, table slot or ops pointer is
+ * written. Each target gets a kprobe whose pre-handler moves the PC to the
+ * replacement; kprobes arm through the kernel's own patching path, which
+ * this firmware permits. Calls back into a native function go through the
+ * ds_kp_* stubs in perf-original.S, which set DS_KP_MAGIC in x16.
+ */
+bool ds_kprobe_hooks;
+module_param_named(kprobe_hooks, ds_kprobe_hooks, bool, 0400);
+MODULE_PARM_DESC(kprobe_hooks, "Hook through kprobes without writing kernel memory (auto on Samsung EL2)");
+
+#define DS_KP_MAGIC 0x44534b504f524947UL
+unsigned long ds_kp_perf_alloc_target, ds_kp_perf_free_target, ds_kp_reboot_target;
+
+struct ds_kprobe {
+	struct kprobe kp;
+	const char *name;
+	unsigned long replacement;
+	bool syscall;
+};
+static struct ds_kprobe ds_kps[ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks) + 2 + ARRAY_SIZE(ipc_syscalls)];
+static unsigned int ds_kp_count;
+static bool ds_kp_live;
+
+static int ds_kp_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	struct ds_kprobe *k = container_of(p, struct ds_kprobe, kp);
+	unsigned long target = k->replacement;
+
+	if (!READ_ONCE(ds_kp_live) || regs->regs[16] == DS_KP_MAGIC)
+		return 0;
+	if (k->syscall) {
+		/* Native wrappers take the user pt_regs; unimplemented IPC
+		 * syscalls may share one sys_ni_syscall body, so dispatch on
+		 * the syscall number. Compat numbers differ: never redirect. */
+		const struct pt_regs *uregs = (const struct pt_regs *)regs->regs[0];
+		unsigned int i;
+
+		if (is_compat_task())
+			return 0;
+		target = 0;
+		for (i = 0; i < ARRAY_SIZE(ipc_syscalls); i++) {
+			if (uregs->syscallno == ipc_syscalls[i].nr) {
+				target = ipc_syscalls[i].replacement;
+				break;
+			}
+		}
+		if (!target)
+			return 0;
+	}
+	instruction_pointer_set(regs, target);
+	return 1;
+}
+
+static int ds_kp_add(const char *name, unsigned long address,
+		     unsigned long replacement, bool syscall)
+{
+	struct ds_kprobe *k;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ds_kp_count; i++) {
+		if ((unsigned long)ds_kps[i].kp.addr != address)
+			continue;
+		if (syscall && ds_kps[i].syscall)
+			return 0;
+		pr_err("kprobe target %s shares an entry with %s\n", name, ds_kps[i].name);
+		return -EBUSY;
+	}
+	if (ds_kp_count >= ARRAY_SIZE(ds_kps))
+		return -ENOSPC;
+	k = &ds_kps[ds_kp_count];
+	memset(k, 0, sizeof(*k));
+	k->kp.addr = (kprobe_opcode_t *)address;
+	k->kp.pre_handler = ds_kp_pre;
+	k->name = name;
+	k->replacement = replacement;
+	k->syscall = syscall;
+	ret = register_kprobe(&k->kp);
+	if (ret) {
+		pr_err("cannot register kprobe on %s: %d\n", name, ret);
+		return ret;
+	}
+	ds_kp_count++;
+	return 0;
+}
+
+static void ds_kp_remove_all(void)
+{
+	while (ds_kp_count)
+		unregister_kprobe(&ds_kps[--ds_kp_count].kp);
+}
+
+static bool samsung_el2(void)
+{
+	return kallsyms_name_to_addr("exynos_report_el2_crash_info") ||
+		kallsyms_name_to_addr("uh_call");
+}
+
 static bool movable_prologue(u32 op)
 {
 	/* NOP/PACIASP; stack allocation/frame pointer; stack stores, no PC operands. */
@@ -212,7 +314,7 @@ static int prepare_hook(struct ds_hook *hook)
 	size = simple_strtoul(start, &end, 0);
 	if (end == start || offset || size < sizeof(hook->saved))
 		return -EINVAL;
-	if (hook->original) {
+	if (hook->original && !ds_kprobe_hooks) {
 		unsigned int i;
 		for (i = 0; i < ARRAY_SIZE(hook->saved); i++) {
 			if (!movable_prologue(hook->saved[i])) {
@@ -319,6 +421,10 @@ int ds_hooks_prepare(void)
 
 	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL) || init_pid_ns.ns.ops)
 		return -EOPNOTSUPP;
+	if (!ds_kprobe_hooks && samsung_el2()) {
+		pr_info("Samsung EL2 detected; using kprobe hooks without kernel memory writes\n");
+		ds_kprobe_hooks = true;
+	}
 	ret = prepare_bpf_hooks();
 	if (ret)
 		return ret;
@@ -332,8 +438,10 @@ int ds_hooks_prepare(void)
 			pr_err("syscall %u no longer points to %s\n", hook->nr, hook->name);
 			return -EOPNOTSUPP;
 		}
-		if (hook->nr == __NR_reboot)
+		if (hook->nr == __NR_reboot) {
 			ds_native_reboot = (void *)hook->saved;
+			ds_kp_reboot_target = hook->saved;
+		}
 		if (!matching_cfi(hook->saved, hook->replacement)) {
 			pr_err("CFI mismatch for %s\n", hook->name);
 			return -EPROTOTYPE;
@@ -355,9 +463,60 @@ int ds_hooks_prepare(void)
 		if (ret)
 			return ret;
 	}
-	pr_info("entry preflight passed: %zu functions, %zu syscalls, %zu BPF callbacks; no patches written\n",
-		ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks), ARRAY_SIZE(ipc_syscalls), ARRAY_SIZE(bpf_hooks));
+	ds_kp_perf_alloc_target = kallsyms_name_to_addr("perf_event_alloc");
+	ds_kp_perf_free_target = kallsyms_name_to_addr("free_event_rcu");
+	if (ds_kprobe_hooks && (!ds_kp_perf_alloc_target || !ds_kp_perf_free_target ||
+				!ds_kp_reboot_target))
+		return -ENOENT;
+	pr_info("entry preflight passed (%s): %zu functions, %zu syscalls, %zu BPF callbacks; no patches written\n",
+		ds_kprobe_hooks ? "kprobe" : "text patch", ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks), ARRAY_SIZE(ipc_syscalls), ARRAY_SIZE(bpf_hooks));
 	return 0;
+}
+
+static int kp_go_live(void *unused)
+{
+	/* Every probe is armed but passive; switch all of them at once. */
+	WRITE_ONCE(init_pid_ns.ns.ops, &pidns_operations);
+	WRITE_ONCE(ds_ipc_active, true);
+	WRITE_ONCE(ds_kp_live, true);
+	return 0;
+}
+
+static int install_kprobes(void)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(hooks); i++) {
+		ret = ds_kp_add(hooks[i].name, hooks[i].address, hooks[i].replacement, false);
+		if (ret)
+			goto fail;
+	}
+	for (i = 0; i < ARRAY_SIZE(proc_hooks); i++) {
+		ret = ds_kp_add(proc_hooks[i].name, proc_hooks[i].address,
+				proc_hooks[i].replacement, false);
+		if (ret)
+			goto fail;
+	}
+	for (i = 0; i < ARRAY_SIZE(ipc_syscalls); i++) {
+		ret = ds_kp_add(ipc_syscalls[i].name, ipc_syscalls[i].saved, 0, true);
+		if (ret)
+			goto fail;
+	}
+	/* The three task iterators share these two callbacks. */
+	ret = ds_kp_add("init_seq_pidns", bpf_hooks[0].saved, bpf_hooks[0].replacement, false);
+	if (ret)
+		goto fail;
+	ret = ds_kp_add("fini_seq_pidns", bpf_hooks[1].saved, bpf_hooks[1].replacement, false);
+	if (ret)
+		goto fail;
+	ret = stop_machine(kp_go_live, NULL, NULL);
+	if (ret)
+		goto fail;
+	return 0;
+fail:
+	ds_kp_remove_all();
+	return ret;
 }
 
 int ds_hooks_install(void)
@@ -366,6 +525,13 @@ int ds_hooks_install(void)
 
 	if (ret)
 		return ret;
+	if (ds_kprobe_hooks) {
+		__module_get(THIS_MODULE);
+		ret = install_kprobes();
+		if (ret)
+			module_put(THIS_MODULE);
+		return ret;
+	}
 	/* Objects in procfs can retain operation pointers after all tasks exit. */
 	__module_get(THIS_MODULE);
 	ret = stop_machine(install_stopped, NULL, NULL);
