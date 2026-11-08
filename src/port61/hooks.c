@@ -477,6 +477,50 @@ int ds_hooks_prepare(void)
 	return 0;
 }
 
+/*
+ * Samsung DEFEX kills a task whose euid rises above the credentials it
+ * recorded, which is every setuid exec (sudo, su) inside a container.
+ * Like KernelSU-Next's KernelSU-only exemption, clear the task argument of
+ * task_defex_enforce() so DEFEX skips the check, but only for the calling
+ * task and only while it lives in a PID namespace this module created.
+ * Android tasks in the initial PID namespace keep full DEFEX enforcement.
+ */
+static bool defex_bypass = true;
+module_param(defex_bypass, bool, 0400);
+MODULE_PARM_DESC(defex_bypass, "Skip Samsung DEFEX enforcement inside container PID namespaces (kprobe mode)");
+
+static int ds_defex_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	if ((struct task_struct *)regs->regs[0] == current &&
+	    task_active_pid_ns(current) != &init_pid_ns)
+		regs->regs[0] = 0;
+	return 0;
+}
+
+static struct kprobe ds_defex_kprobe = {
+	.symbol_name = "task_defex_enforce",
+	.pre_handler = ds_defex_pre,
+};
+
+static void ds_defex_install(void)
+{
+	int ret;
+
+	if (!defex_bypass)
+		return;
+	ret = register_kprobe(&ds_defex_kprobe);
+	if (ret == -ENOENT || ret == -EINVAL) {
+		pr_info("Samsung DEFEX not present; no container exemption needed\n");
+		return;
+	}
+	if (ret) {
+		/* Containers still work; only setuid escalation inside them is killed. */
+		pr_warn("cannot hook task_defex_enforce: %d; setuid inside containers stays blocked\n", ret);
+		return;
+	}
+	pr_info("Samsung DEFEX: enforcement skipped for tasks in container PID namespaces\n");
+}
+
 static int kp_go_live(void *unused)
 {
 	/* Every probe is armed but passive; switch all of them at once. */
@@ -517,6 +561,7 @@ static int install_kprobes(void)
 	ret = stop_machine(kp_go_live, NULL, NULL);
 	if (ret)
 		goto fail;
+	ds_defex_install();
 	return 0;
 fail:
 	ds_kp_remove_all();
