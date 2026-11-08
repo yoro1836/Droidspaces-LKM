@@ -47,7 +47,11 @@ droidspaces_userns_test-y := src/userns/main.o src/userns/user_namespace.o src/u
 ccflags-y += -DCONFIG_USER_NS=1 -include $(src)/src/userns/names.h
 else ifeq ($(TARGET),devtmpfs)
 obj-m := droidspaces_devtmpfs.o
-droidspaces_devtmpfs-y := src/devtmpfs/main.o src/devtmpfs/devtmpfs.o src/devtmpfs/hooks.o src/devtmpfs/original.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
+DEVTMPFS_DIR ?= src/devtmpfs
+droidspaces_devtmpfs-y := $(DEVTMPFS_DIR)/main.o $(DEVTMPFS_DIR)/devtmpfs.o $(DEVTMPFS_DIR)/hooks.o $(DEVTMPFS_DIR)/original.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
+ifneq ($(GKI_ANDROID),)
+ccflags-y += -DDS_GKI_ANDROID='"$(GKI_ANDROID)"' -DDS_GKI_VERSION='"$(GKI_VERSION)"'
+endif
 ccflags-y += -I$(srctree)
 ifeq ($(TEST_DEVTMPFS),1)
 obj-m += droidspaces_devtmpfs_fixture.o

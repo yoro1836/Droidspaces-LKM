@@ -9,6 +9,7 @@
     "kmi": "android14-6.1",
     "image": "ghcr.io/ylarod/ddk-min@sha256:1dd6ac340b627a90a4031d6d0df6b129d8cc949b139fb56032c898f023d3d5d3",
     "source": "src/port61",
+    "devtmpfs_source": "src/devtmpfs61",
     "ddk_tag": "android14-6.1-20260313"
   },
   "5.15": {

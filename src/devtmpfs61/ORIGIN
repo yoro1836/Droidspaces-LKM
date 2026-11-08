@@ -1,0 +1,14 @@
+Source: Android common kernel, drivers/base/devtmpfs.c
+DDK: ghcr.io/ylarod/ddk-min@sha256:1dd6ac340b627a90a4031d6d0df6b129d8cc949b139fb56032c898f023d3d5d3
+Tag: android14-6.1 (kernel/common refs/heads/android14-6.1)
+Original source SHA256: 2b3367be53db14ab54522e209dca19717ac0cfc5239e12ef6e3a78fae8bc867b
+
+Derived from src/devtmpfs/ (the PLZ110 6.12 port); same adaptations, plus:
+- 6.1 VFS calls take &init_user_ns instead of &nop_mnt_idmap, and
+  is_blockdev() is local as in the 6.1 source.
+- Loading is gated like the GKI namespace payloads: gki=1 and a matching
+  android14-6.1 release (or the build VM), with the userspace ABI check.
+- kprobe mode (auto on Samsung EL2, or kprobe_hooks=1): device_add and
+  device_del get entry kprobes that move the PC to the replacements; the
+  native functions are reached through x16-marked stubs. No kernel or
+  module text is written.
