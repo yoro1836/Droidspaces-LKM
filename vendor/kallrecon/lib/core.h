@@ -43,6 +43,10 @@ extern unsigned long (*kallrecon_module_klp)(const char *name); /* experimental,
 #endif
 
 void find_kallsyms_base(void);
+/* lookups go through kallsyms_lookup_name found via kprobe, no table scan */
+extern int kr_direct;
+/* discovery succeeded by either path; kallsyms_name_to_addr() is usable */
+int kallrecon_ready(void);
 
 enum kallrecon_cleanup {
 	KALLRECON_CLEANUP_AUTO = 0,

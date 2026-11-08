@@ -64,7 +64,7 @@ static int __init ds_port_init(void)
 	if (ret)
 		return ret;
 	find_kallsyms_base();
-	if (kallrecon_fail_reason() != KALLRECON_OK || !klnum_val) {
+	if (!kallrecon_ready()) {
 		pr_err("KallRecon discovery failed: reason=%d symbols=%u\n",
 		       kallrecon_fail_reason(), klnum_val);
 		return -ENODATA;

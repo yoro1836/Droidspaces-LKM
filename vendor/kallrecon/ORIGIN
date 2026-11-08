@@ -1,3 +1,10 @@
 https://github.com/Dere3046/KallRecon
 Commit: b258fb670f3f8878b18029167a2c1a15a71d51ad
 Copied from ../KallRecon without modifications (lib/, deps.mk, LICENSE).
+
+Local change: lib/core.c resolves kallsyms_lookup_name through a disabled
+(never armed) kprobe before any table scan, and kallsyms_name_to_addr()
+uses it directly when found. Samsung Exynos EL2 forbids reads of some
+kernel image pages; the forward scan from sprint_symbol hit one and the
+stage-2 fault reset the device (S5E9945, 6.1.162-android14-11).
+kallrecon_ready() replaces the klnum_val check in callers.

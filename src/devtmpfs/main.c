@@ -124,7 +124,7 @@ static int __init ds_init(void)
 	ret = kallrecon_supply(&hint);
 	if (ret) return ret;
 	find_kallsyms_base();
-	if (kallrecon_fail_reason() != KALLRECON_OK || !klnum_val)
+	if (!kallrecon_ready())
 		return -ENODATA;
 	ret = ds_hooks_prepare();
 	if (ret) return ret;

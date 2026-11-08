@@ -56,7 +56,7 @@ static int __init ds_port_init(void)
 	if (ret)
 		return ret;
 	find_kallsyms_base();
-	if (kallrecon_fail_reason() != KALLRECON_OK || !klnum_val)
+	if (!kallrecon_ready())
 		return -ENODATA;
 	if (kallsyms_name_to_addr("pidns_operations") ||
 	    kallsyms_name_to_addr("ipcns_operations")) {
