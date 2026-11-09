@@ -62,3 +62,22 @@ new files show owner 0:0; `unshare -rmpf --mount-proc` sees its own pid 1;
 `bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev --tmpfs /tmp id`
 runs (clone(CLONE_NEWUSER) through the vendor copy_creds), and
 /proc/self/status inside keeps Uid/Gid 1000.
+
+Rootless Podman device validation (SM-S921N, build-id ...433df73b), as uid
+1000 with Allow Sandboxing, `--storage-driver=vfs --runtime crun
+--cgroups=disabled --security-opt no-new-privileges`: alpine runs as
+mapped root (uid_map 0 1000 1 / 1 100000 65536), /dev/mqueue mounts
+(internal mqueue super_block owned in create_ipc_ns), and --network=pasta
+gives DNS and HTTP. Raw ICMP works with --cap-add NET_RAW.
+
+Known gaps, to fix:
+- seccomp filters need no_new_privs: seccomp_prepare_filter() checks
+  CAP_SYS_ADMIN against the native current_user_ns() (init_user_ns), so a
+  container root without no_new_privs gets EACCES. The 6.12 port
+  (src/userns) has the same limitation (docs/docker-plz110-v0.1.4.md).
+- net.ipv4.ping_group_range: the native sysctl handler converts the range
+  with init_user_ns, so Podman's default "0 0" written from the container
+  means host gid 0 and unprivileged ICMP sockets fail for container root
+  (gid 1000 on the host). "0 2147483647" works. Needs the handler to map
+  through the writer's user namespace, as upstream.
+- FUSE mounts from a child user namespace (fuse-overlayfs) not yet ported.
