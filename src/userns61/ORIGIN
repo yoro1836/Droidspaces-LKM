@@ -53,3 +53,12 @@ Allow Sandboxing, `unshare -r id` shows groups=0(root),65534(nobody);
 `setpriv --reuid=0 --regid=0 --keep-groups`, and when running sudo (which
 fails: uid 1 is unmapped); setgroups after setgroups=deny is refused as
 upstream. Outside, `sudo id` in the container and KernelSU su still work.
+
+Stage 1.5 B device validation (SM-S921N, a040781a...): `droidspaces check`
+and KernelSU su unaffected. In a container with Allow Sandboxing, as uid
+1000: stat shows the home directory as 0:0 and /etc/passwd as
+65534:65534; /etc/shadow stays unreadable; `unshare -rm` mounts tmpfs and
+new files show owner 0:0; `unshare -rmpf --mount-proc` sees its own pid 1;
+`bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev --tmpfs /tmp id`
+runs (clone(CLONE_NEWUSER) through the vendor copy_creds), and
+/proc/self/status inside keeps Uid/Gid 1000.
