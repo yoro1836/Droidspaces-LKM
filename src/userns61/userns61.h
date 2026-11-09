@@ -48,4 +48,7 @@ int ds_copy_creds(struct task_struct *p, unsigned long clone_flags);
 struct fuse_conn;
 void ds_fuse_prepare(void);
 int ds_fuse_allow_current_process(struct fuse_conn *fc);
+struct inode; struct fuse_attr; struct kstat;
+void ds_fuse_change_attributes_common(struct inode *, struct fuse_attr *, u64, u32);
+void ds_fuse_fillattr(struct inode *, struct fuse_attr *, struct kstat *);
 #endif

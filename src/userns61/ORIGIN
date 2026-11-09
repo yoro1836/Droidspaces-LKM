@@ -82,7 +82,10 @@ Known gaps, to fix:
   through the writer's user namespace, as upstream.
 - FUSE (minimal): child namespaces may mount fuse; the fs_context, super
   block and connection take the mounter's namespace as owner and allow_other
-  is confined to it (ds_fuse_allow_current_process). Request headers,
-  attributes, permission checks and ACLs still use the native identity
-  conversions, so ids are host kuids rather than mapped ids. FUSE-BPF,
-  fuseblk and passthrough are unchanged.
+  is confined to it (ds_fuse_allow_current_process). File ids are mapped
+  through the connection's namespace: fuse_change_attributes_common and
+  fuse_fillattr are redirected to module copies that use the real
+  make_kuid/make_kgid (src/userns61/live-fuse.c), so inode owners and
+  stat results are correct and a child-owned mount's own tasks pass
+  inode_permission. Request-header uid/gid (fuse_get_req) and ACLs still
+  use native identity; FUSE-BPF, fuseblk and passthrough are unchanged.

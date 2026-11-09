@@ -247,6 +247,9 @@ static struct ds_hook hooks[] = {
 	HOOK("do_faccessat", ds_do_faccessat),
 	/* allow_other only within the connection's user namespace. */
 	HOOK("fuse_allow_current_process", ds_fuse_allow_current_process),
+	/* Map file ids through the connection's user namespace. */
+	HOOK("fuse_change_attributes_common", ds_fuse_change_attributes_common),
+	HOOK("fuse_fillattr", ds_fuse_fillattr),
 #endif
 };
 
