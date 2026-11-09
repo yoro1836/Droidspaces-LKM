@@ -124,6 +124,19 @@ static int __init ds_init(void)
 	find_kallsyms_base();
 	if (!kallrecon_ready())
 		return -ENODATA;
+	/*
+	 * Samsung KDP keeps credentials in hypervisor-protected memory and
+	 * refcounts them outside struct cred. The worker's get_current_cred()/
+	 * override_creds() must then use the KDP-aware inlines from the
+	 * vendor's headers; generic GKI inlines write the protected cred and
+	 * the device resets. Refuse to load such a mismatched build.
+	 */
+	if (!IS_ENABLED(CONFIG_KDP_CRED) &&
+	    (kallsyms_name_to_addr("kdp_usecount_inc") ||
+	     (kr_direct && kallrecon_klp("kdp_usecount_inc")))) {
+		pr_err("Samsung KDP kernel: rebuild against the vendor headers (scripts/build-samsung.py)\n");
+		return -EOPNOTSUPP;
+	}
 	ret = ds_hooks_prepare();
 	if (ret) return ret;
 	ret = ds_devtmpfs_start();

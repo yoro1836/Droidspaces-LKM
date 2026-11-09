@@ -12,3 +12,12 @@ Derived from src/devtmpfs/ (the PLZ110 6.12 port); same adaptations, plus:
   device_del get entry kprobes that move the PC to the replacements; the
   native functions are reached through x16-marked stubs. No kernel or
   module text is written.
+
+Samsung KDP kernels (CONFIG_KDP_CRED): build with scripts/build-samsung.py
+against the vendor source and the device's own config. The worker's cred
+handling (get_current_cred/override_creds) must use the vendor's KDP-aware
+inlines; a GKI-header build writes the protected cred and the device resets
+inside the start path. A GKI-header build now refuses to load when it finds
+kdp_usecount_inc. Validated on SM-S921N (S5E9945, 6.1.162-android14-11,
+firmware S921NKSUHEZIF) with vendor source 6.1.138: ready=1 errors=0 and
+device nodes populated, alongside the kprobe-mode namespace module.
