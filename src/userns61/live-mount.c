@@ -79,9 +79,12 @@ static struct user_namespace *fs_context_owner(const struct fs_context *fc)
 		return fc->root ? child_userns(fc->root->d_sb->s_user_ns) : NULL;
 	if (fc->purpose != FS_CONTEXT_FOR_MOUNT || !nsp)
 		return NULL;
-	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") ||
-	    !strcmp(name, "devpts") || !strcmp(name, "fuse"))
+	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") || !strcmp(name, "devpts"))
 		return child_userns(fc->cred->user_ns);
+#ifdef DS_USERNS_FUSE
+	if (!strcmp(name, "fuse"))
+		return child_userns(fc->cred->user_ns);
+#endif
 	if (!strcmp(name, "sysfs"))
 		return child_userns(nsp->net_ns->user_ns);
 	if (!strcmp(name, "mqueue"))
@@ -246,13 +249,17 @@ NS_OWNER_RETURN(copy_utsname, struct uts_namespace, CLONE_NEWUTS);
 NS_OWNER_RETURN(copy_cgroup_ns, struct cgroup_namespace, CLONE_NEWCGROUP);
 NS_OWNER_RETURN(copy_time_ns, struct time_namespace, CLONE_NEWTIME);
 
+#ifdef DS_USERNS_FUSE
 extern struct kretprobe ds_fuse_get_req_probe;
+#endif
 
 static struct kretprobe *const mount_probes[] = {
 	&copy_mnt_ns_probe, &fs_context_mount_probe,
 	&fs_context_reconfigure_probe, &sget_fc_probe,
 	&copy_utsname_probe, &copy_cgroup_ns_probe, &copy_time_ns_probe,
+#ifdef DS_USERNS_FUSE
 	&ds_fuse_get_req_probe,
+#endif
 };
 
 int ds_userns_mount_register(void)

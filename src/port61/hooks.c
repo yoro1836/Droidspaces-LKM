@@ -245,6 +245,8 @@ static struct ds_hook hooks[] = {
 	HOOK("inode_owner_or_capable", ds_inode_owner_or_capable),
 	HOOK("chown_common", ds_chown_common),
 	HOOK("do_faccessat", ds_do_faccessat),
+#endif
+#ifdef DS_USERNS_FUSE
 	/* allow_other only within the connection's user namespace. */
 	HOOK("fuse_allow_current_process", ds_fuse_allow_current_process),
 	/* Map file ids through the connection's user namespace. */
@@ -513,7 +515,7 @@ int ds_hooks_prepare(void)
 		pr_info("Samsung EL2 detected; using kprobe hooks without kernel memory writes\n");
 		ds_kprobe_hooks = true;
 	}
-#ifdef DS_USERNS_LIVE
+#ifdef DS_USERNS_FUSE
 	ds_fuse_prepare();
 #endif
 	ret = prepare_bpf_hooks();

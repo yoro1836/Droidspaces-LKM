@@ -71,7 +71,15 @@ void ds_fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
 	atomic64_set(&fc->attr_version, 1);
 	get_random_bytes(&fc->scramble_key, sizeof(fc->scramble_key));
 	fc->pid_ns = get_pid_ns(task_active_pid_ns(current));
-#ifdef DS_USERNS_LIVE
+#if defined(DS_USERNS_LIVE) && !defined(DS_USERNS_FUSE)
+	/*
+	 * Built without USER_NS, the native callers' user_ns argument is dead
+	 * and may not be passed at all; never read it. Without USERNS61_FUSE
+	 * FUSE stays owned by init_user_ns (child namespaces cannot mount it).
+	 */
+	(void)user_ns;
+	fc->user_ns = &init_user_ns;
+#elif defined(DS_USERNS_LIVE)
 	/*
 	 * Built without USER_NS, the native callers' user_ns argument is dead
 	 * and may not be passed at all; never read it. fuse_conn_init() runs
@@ -113,7 +121,7 @@ void ds_fuse_delayed_release(struct rcu_head *p)
 	fc->release(fc);
 }
 
-#ifdef DS_USERNS_LIVE
+#ifdef DS_USERNS_FUSE
 #include "core.h"
 
 static bool *ds_fuse_sys_admin_access;
