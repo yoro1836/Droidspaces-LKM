@@ -214,3 +214,53 @@ struct kretprobe ds_fuse_do_getattr_probe = {
 	/* The request may sleep until the daemon replies. */
 	.maxactive = 256,
 };
+
+/*
+ * Android passthrough on child-owned connections. The vendor kernel
+ * negotiates Android's own FUSE passthrough (FUSE_PASSTHROUGH = 1ULL << 63,
+ * FUSE_DEV_IOC_PASSTHROUGH_OPEN), and its fuse_passthrough_open() has no
+ * capability check, where upstream passthrough requires CAP_SYS_ADMIN in
+ * init_user_ns for backing files. The 6.12 port clears the flag for child
+ * connections; do the same here. A kprobe pre-handler on
+ * process_init_reply(fm, args, error) clears the bit in the daemon's reply
+ * before the native function reads it, so fc->passthrough is never set
+ * and fuse_passthrough_open() refuses. fm (x0) and args (x1) are live in
+ * its prologue; init-owned connections (Android /storage) are untouched.
+ */
+struct ds_fuse_init_args {
+	struct fuse_args args;
+	struct fuse_init_in in;
+	struct fuse_init_out out;
+};
+
+static int fuse_init_reply_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	struct fuse_mount *fm = (struct fuse_mount *)regs->regs[0];
+	struct ds_fuse_init_args *ia =
+		container_of((struct fuse_args *)regs->regs[1], struct ds_fuse_init_args, args);
+
+	if (fm->fc->user_ns != &init_user_ns)
+		ia->out.flags2 &= ~(u32)(FUSE_PASSTHROUGH >> 32);
+	return 0;
+}
+
+static struct kprobe fuse_init_reply_probe = {
+	.symbol_name = "process_init_reply",
+	.pre_handler = fuse_init_reply_pre,
+};
+
+/* Child namespaces may mount fuse only while the guard is armed. */
+bool ds_fuse_guard_live;
+
+int ds_fuse_register_init_guard(void)
+{
+	int ret;
+
+	/* Native process_init_reply reads out.major at args + 0xe8. */
+	BUILD_BUG_ON(offsetof(struct ds_fuse_init_args, out) != 0xe8);
+	BUILD_BUG_ON((FUSE_PASSTHROUGH >> 32) != (1U << 31));
+	ret = register_kprobe(&fuse_init_reply_probe);
+	if (!ret)
+		WRITE_ONCE(ds_fuse_guard_live, true);
+	return ret;
+}

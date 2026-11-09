@@ -90,8 +90,14 @@ Known gaps, to fix:
   inode_permission. Request-header uid/gid are rewritten by a kretprobe
   on fuse_get_req (unmapped ids become the overflow id), and stat results
   of fuse_do_getattr, which inlines fuse_fillattr, by a kretprobe on its
-  return. Device (FUSE build, ...49e011a9aa4b): fuse-overlayfs in
-  `unshare -rm` creates and reads files owned 0:0, and rootless Podman runs
-  on the overlay driver with fuse-overlayfs. Forced requests
+  return. Android passthrough (FUSE_PASSTHROUGH 1ULL << 63, no capability
+  check in fuse_passthrough_open) is cleared from child connections' INIT
+  reply by a kprobe on process_init_reply; child fuse mounts are refused
+  unless that guard is armed. Device: with ...49e011a9aa4b, fuse-overlayfs in
+  `unshare -rm` creates and reads files owned 0:0; with ...147515536f085b22
+  (9/9 probes, /sdcard and the file manager unaffected) rootless Podman on
+  the overlay driver with fuse-overlayfs shows created files, directories
+  and O_CREAT files as 0:0 both immediately and after the attribute cache
+  expires. Forced requests
   and ACLs still use native identity; FUSE-BPF, fuseblk and passthrough
   are unchanged.

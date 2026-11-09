@@ -52,6 +52,9 @@
 #include "userns61.h"
 
 static bool mount_live;
+#ifdef DS_USERNS_FUSE
+extern bool ds_fuse_guard_live;
+#endif
 
 /* A non-initial user namespace created by this module, or NULL. */
 static struct user_namespace *child_userns(struct user_namespace *ns)
@@ -82,8 +85,9 @@ static struct user_namespace *fs_context_owner(const struct fs_context *fc)
 	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") || !strcmp(name, "devpts"))
 		return child_userns(fc->cred->user_ns);
 #ifdef DS_USERNS_FUSE
+	/* Refused unless the passthrough guard (live-fuse.c) is armed. */
 	if (!strcmp(name, "fuse"))
-		return child_userns(fc->cred->user_ns);
+		return READ_ONCE(ds_fuse_guard_live) ? child_userns(fc->cred->user_ns) : NULL;
 #endif
 	if (!strcmp(name, "sysfs"))
 		return child_userns(nsp->net_ns->user_ns);
@@ -252,6 +256,7 @@ NS_OWNER_RETURN(copy_time_ns, struct time_namespace, CLONE_NEWTIME);
 #ifdef DS_USERNS_FUSE
 extern struct kretprobe ds_fuse_get_req_probe;
 extern struct kretprobe ds_fuse_do_getattr_probe;
+int ds_fuse_register_init_guard(void);
 #endif
 
 static struct kretprobe *const mount_probes[] = {
@@ -279,6 +284,14 @@ int ds_userns_mount_register(void)
 	}
 	if (!ok)
 		return -ENOENT;
+#ifdef DS_USERNS_FUSE
+	{
+		int ret = ds_fuse_register_init_guard();
+
+		if (ret)
+			pr_warn("userns: FUSE passthrough guard unavailable (%d)\n", ret);
+	}
+#endif
 	WRITE_ONCE(mount_live, true);
 	pr_info("userns: %u/%zu namespace and mount owner probes active\n",
 		ok, ARRAY_SIZE(mount_probes));
