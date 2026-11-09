@@ -29,4 +29,16 @@ long ds_identity_setfsgid(gid_t gid);
 bool ds_identity_may_setgroups(void);
 int ds_cap_task_fix_setuid(struct cred *new, const struct cred *old, int flags);
 int ds_cap_bprm_creds_from_file(struct linux_binprm *bprm, struct file *file);
+struct kstat;
+struct stat;
+struct statx;
+struct inode;
+struct path;
+int ds_cp_new_stat(struct kstat *stat, struct stat __user *statbuf);
+int ds_cp_statx(const struct kstat *stat, struct statx __user *buffer);
+bool ds_privileged_wrt_inode_uidgid(struct user_namespace *ns, struct user_namespace *mnt_userns, const struct inode *inode);
+bool ds_capable_wrt_inode_uidgid(struct user_namespace *mnt_userns, const struct inode *inode, int cap);
+bool ds_inode_owner_or_capable(struct user_namespace *mnt_userns, const struct inode *inode);
+int ds_chown_common(const struct path *path, uid_t user, gid_t group);
+long ds_do_faccessat(int dfd, const char __user *filename, int mode, int flags);
 #endif

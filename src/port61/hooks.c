@@ -229,6 +229,15 @@ static struct ds_hook hooks[] = {
 	HOOK("may_setgroups", ds_identity_may_setgroups),
 	HOOK("cap_task_fix_setuid", ds_cap_task_fix_setuid),
 	HOOK("cap_bprm_creds_from_file", ds_cap_bprm_creds_from_file),
+	/* Owners as seen from the caller's namespace (below KernelSU's newfstatat probe). */
+	HOOK("cp_new_stat", ds_cp_new_stat),
+	HOOK("cp_statx", ds_cp_statx),
+	/* Capabilities over inodes only within the caller's namespace. */
+	HOOK("privileged_wrt_inode_uidgid", ds_privileged_wrt_inode_uidgid),
+	HOOK("capable_wrt_inode_uidgid", ds_capable_wrt_inode_uidgid),
+	HOOK("inode_owner_or_capable", ds_inode_owner_or_capable),
+	HOOK("chown_common", ds_chown_common),
+	HOOK("do_faccessat", ds_do_faccessat),
 #endif
 };
 
