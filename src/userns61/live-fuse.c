@@ -16,6 +16,7 @@
  * native behaviour, so Android's own FUSE mounts are unchanged.
  */
 #include "fs/fuse/fuse_i.h"
+#include <linux/kprobes.h>
 #include <linux/user_namespace.h>
 #include "userns61.h"
 
@@ -123,3 +124,42 @@ void ds_fuse_fillattr(struct inode *inode, struct fuse_attr *attr,
 
 	stat->blksize = 1 << blkbits;
 }
+
+/*
+ * Request header ids. The native fuse_get_req() (static, vendor
+ * fs/fuse/dev.c) fills req->in.h.uid/gid with from_kuid()/from_kgid(),
+ * identity in this build, so a daemon in a child namespace saw the
+ * requester's host ids and rejected creates (EINVAL). It is not copied
+ * here: its wait logic carries vendor changes. Instead a kretprobe
+ * rewrites the header of a freshly allocated request on return, before
+ * any caller (fuse_simple_request, fuse_simple_background,
+ * fuse_dev_do_write) queues it, in the requesting task. Only connections
+ * owned by a child namespace are touched. An id outside the namespace is
+ * sent as the overflow id (upstream fails such a request with EOVERFLOW,
+ * which a return probe cannot do); with allow_other confined to the
+ * namespace, only the mount owner can reach this.
+ *
+ * Forced requests (fuse_force_creds, inlined into fuse_simple_request)
+ * still carry identity ids; they are release-type operations.
+ */
+static int fuse_get_req_return(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct fuse_req *req = (void *)regs_return_value(regs);
+	struct fuse_conn *fc;
+
+	if (IS_ERR_OR_NULL(req))
+		return 0;
+	fc = req->fm->fc;
+	if (fc->user_ns == &init_user_ns)
+		return 0;
+	req->in.h.uid = from_kuid_munged(fc->user_ns, current_fsuid());
+	req->in.h.gid = from_kgid_munged(fc->user_ns, current_fsgid());
+	return 0;
+}
+
+struct kretprobe ds_fuse_get_req_probe = {
+	.kp.symbol_name = "fuse_get_req",
+	.handler = fuse_get_req_return,
+	/* Requests may sleep in fuse_get_req until the daemon initialises. */
+	.maxactive = 256,
+};

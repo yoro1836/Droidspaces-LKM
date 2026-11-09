@@ -246,10 +246,13 @@ NS_OWNER_RETURN(copy_utsname, struct uts_namespace, CLONE_NEWUTS);
 NS_OWNER_RETURN(copy_cgroup_ns, struct cgroup_namespace, CLONE_NEWCGROUP);
 NS_OWNER_RETURN(copy_time_ns, struct time_namespace, CLONE_NEWTIME);
 
+extern struct kretprobe ds_fuse_get_req_probe;
+
 static struct kretprobe *const mount_probes[] = {
 	&copy_mnt_ns_probe, &fs_context_mount_probe,
 	&fs_context_reconfigure_probe, &sget_fc_probe,
 	&copy_utsname_probe, &copy_cgroup_ns_probe, &copy_time_ns_probe,
+	&ds_fuse_get_req_probe,
 };
 
 int ds_userns_mount_register(void)

@@ -87,5 +87,7 @@ Known gaps, to fix:
   fuse_fillattr are redirected to module copies that use the real
   make_kuid/make_kgid (src/userns61/live-fuse.c), so inode owners and
   stat results are correct and a child-owned mount's own tasks pass
-  inode_permission. Request-header uid/gid (fuse_get_req) and ACLs still
-  use native identity; FUSE-BPF, fuseblk and passthrough are unchanged.
+  inode_permission. Request-header uid/gid are rewritten by a kretprobe
+  on fuse_get_req (unmapped ids become the overflow id); forced requests
+  and ACLs still use native identity; FUSE-BPF, fuseblk and passthrough
+  are unchanged.
