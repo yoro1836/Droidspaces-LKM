@@ -31,3 +31,19 @@ Sandboxing, `unshare -r id` as uid 1000 reports uid=0 gid=0 and
 /proc/self/uid_map reads "0 1000 1"; PID and IPC namespaces still work from
 the same module. Known gap: getgroups returns unmapped host gids (no
 live-groups yet).
+
+Stage 1.5 A (identity):
+- live-identity.c: vendor kernel/sys.c __sys_set{,re,res,fs}{u,g}id and
+  getres{u,g}id verbatim (DEFEX checks kept) with CONFIG_USER_NS, redirected
+  at the __sys_* helpers (native and compat wrappers call them; GKI vmlinux
+  confirms no inlining). The syscall wrappers are left alone because Samsung
+  KernelSU kretprobes __arm64_sys_setresuid.
+- live-groups.c: vendor kernel/groups.c getgroups/setgroups with mapped ids;
+  may_setgroups is redirected and refuses compat tasks in a child namespace
+  (setgroups16 still converts ids natively).
+- live-capabilities.c: vendor security/commoncap.c cap_task_fix_setuid and
+  cap_bprm_creds_from_file. The latter first undoes set-id bits that the
+  inlined bprm_fill_uid applied for an owner or group unmapped in the new
+  namespace (it was built with kuid_has_mapping() always true).
+- userns_scope=1 (default): only tasks in a module PID namespace or with
+  CAP_SYS_ADMIN may create user namespaces until stage 1.5 B lands.

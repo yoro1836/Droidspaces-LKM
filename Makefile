@@ -34,7 +34,8 @@ ifeq ($(USERNS61),1)
 # Stage 1 of android14-6.1 user namespaces (src/userns61): namespace creation,
 # id mapping, /proc map files and identity syscalls. Build with the vendor's
 # headers on Samsung KDP kernels (scripts/build-samsung.py).
-droidspaces_ns-y += src/userns61/user_namespace.o src/userns61/live-proc.o src/userns61/live-syscalls.o
+droidspaces_ns-y += src/userns61/user_namespace.o src/userns61/live-proc.o src/userns61/live-syscalls.o \
+	src/userns61/live-identity.o src/userns61/live-groups.o src/userns61/live-capabilities.o
 ccflags-y += -DCONFIG_USER_NS=1 -DDS_USERNS_LIVE=1 -DDS_USERNS_PIN=1
 ccflags-y += -include $(src)/src/userns61/live-names.h
 LINUXINCLUDE := -I$(src)/src/userns61/compat $(LINUXINCLUDE)

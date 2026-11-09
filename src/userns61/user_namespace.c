@@ -22,6 +22,19 @@
 #include <linux/bsearch.h>
 #include <linux/sort.h>
 #include "userns61.h"
+#include <linux/moduleparam.h>
+#include <linux/pid_namespace.h>
+
+/*
+ * While the identity and permission paths are still being ported, user
+ * namespaces are a privilege boundary only where those paths are covered.
+ * userns_scope=1 (default) lets only tasks inside a container PID namespace
+ * created by this module, or tasks with CAP_SYS_ADMIN, create one.
+ * userns_scope=0 allows any task.
+ */
+static int userns_scope = 1;
+module_param(userns_scope, int, 0400);
+MODULE_PARM_DESC(userns_scope, "1: user namespaces only from container PID namespaces or CAP_SYS_ADMIN; 0: anyone");
 
 static struct kmem_cache *user_ns_cachep;
 static struct workqueue_struct *userns_workqueue;
@@ -89,6 +102,11 @@ int create_user_ns(struct cred *new)
 	kgid_t group = new->egid;
 	struct ucounts *ucounts;
 	int ret, i;
+
+	ret = -EPERM;
+	if (userns_scope && task_active_pid_ns(current) == &init_pid_ns &&
+	    !capable(CAP_SYS_ADMIN))
+		goto fail;
 
 	ret = -ENOSPC;
 	if (parent_ns->level > 32)

@@ -112,6 +112,10 @@ DECLARE_IPC_SYSCALL(getuid);
 DECLARE_IPC_SYSCALL(geteuid);
 DECLARE_IPC_SYSCALL(getgid);
 DECLARE_IPC_SYSCALL(getegid);
+DECLARE_IPC_SYSCALL(getresuid);
+DECLARE_IPC_SYSCALL(getresgid);
+DECLARE_IPC_SYSCALL(getgroups);
+DECLARE_IPC_SYSCALL(setgroups);
 #define ID_SYSCALL(name) { "__arm64_sys_" #name, __NR_##name, (unsigned long)__arm64_sys_ds_##name, 0 }
 #endif
 
@@ -154,6 +158,7 @@ static struct ds_syscall_hook ipc_syscalls[] = {
 	{ "__arm64_sys_reboot", __NR_reboot, (unsigned long)__arm64_sys_ds_reboot, 0 },
 #ifdef DS_USERNS_LIVE
 	ID_SYSCALL(getuid), ID_SYSCALL(geteuid), ID_SYSCALL(getgid), ID_SYSCALL(getegid),
+	ID_SYSCALL(getresuid), ID_SYSCALL(getresgid), ID_SYSCALL(getgroups), ID_SYSCALL(setgroups),
 #endif
 };
 static unsigned long *syscall_table;
@@ -207,6 +212,23 @@ static struct ds_hook hooks[] = {
 	HOOK("proc_tid_base_lookup", ds_userns_tid_lookup),
 	HOOK("proc_tgid_base_readdir", ds_userns_tgid_readdir),
 	HOOK("proc_tid_base_readdir", ds_userns_tid_readdir),
+	/*
+	 * Identity changes, through the __sys_* helpers that the native and
+	 * compat syscall wrappers call (not inlined on android14-6.1). The
+	 * wrappers themselves stay untouched: Samsung KernelSU puts its own
+	 * kretprobe on __arm64_sys_setresuid.
+	 */
+	HOOK("__sys_setregid", ds_identity_setregid),
+	HOOK("__sys_setgid", ds_identity_setgid),
+	HOOK("__sys_setreuid", ds_identity_setreuid),
+	HOOK("__sys_setuid", ds_identity_setuid),
+	HOOK("__sys_setresuid", ds_identity_setresuid),
+	HOOK("__sys_setresgid", ds_identity_setresgid),
+	HOOK("__sys_setfsuid", ds_identity_setfsuid),
+	HOOK("__sys_setfsgid", ds_identity_setfsgid),
+	HOOK("may_setgroups", ds_identity_may_setgroups),
+	HOOK("cap_task_fix_setuid", ds_cap_task_fix_setuid),
+	HOOK("cap_bprm_creds_from_file", ds_cap_bprm_creds_from_file),
 #endif
 };
 
