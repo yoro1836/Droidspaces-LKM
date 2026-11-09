@@ -163,3 +163,54 @@ struct kretprobe ds_fuse_get_req_probe = {
 	/* Requests may sleep in fuse_get_req until the daemon initialises. */
 	.maxactive = 256,
 };
+
+/*
+ * Stat results from FUSE_GETATTR. The native fuse_do_getattr() (static,
+ * vendor fs/fuse/dir.c) reaches fuse_fillattr() through the inline
+ * finalize_attr() in fuse_i.h, and the compiler inlined that copy, so the
+ * fuse_fillattr redirect above never sees it: stat->uid/gid get the
+ * daemon's ids through identity make_kuid()/make_kgid(). The inode update
+ * on the same path calls fuse_change_attributes() out of line and is
+ * mapped, so the first stat after a create showed the overflow id and a
+ * later, cached stat the right one. Both callers (fuse_update_get_attr,
+ * fuse_perm_getattr) call it out of line, and inode (x0) and stat (x1) are
+ * live in its prologue. On return, map the identity-converted ids through
+ * the connection's namespace, which is exactly what upstream computes.
+ */
+struct fuse_getattr_args {
+	struct inode *inode;
+	struct kstat *stat;
+};
+
+static int fuse_do_getattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct fuse_getattr_args *a = (void *)ri->data;
+
+	a->inode = (struct inode *)regs->regs[0];
+	a->stat = (struct kstat *)regs->regs[1];
+	return 0;
+}
+
+static int fuse_do_getattr_return(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct fuse_getattr_args *a = (void *)ri->data;
+	struct fuse_conn *fc;
+
+	if (regs_return_value(regs) || !a->stat)
+		return 0;
+	fc = get_fuse_conn(a->inode);
+	if (fc->user_ns == &init_user_ns)
+		return 0;
+	a->stat->uid = make_kuid(fc->user_ns, __kuid_val(a->stat->uid));
+	a->stat->gid = make_kgid(fc->user_ns, __kgid_val(a->stat->gid));
+	return 0;
+}
+
+struct kretprobe ds_fuse_do_getattr_probe = {
+	.kp.symbol_name = "fuse_do_getattr",
+	.entry_handler = fuse_do_getattr_entry,
+	.handler = fuse_do_getattr_return,
+	.data_size = sizeof(struct fuse_getattr_args),
+	/* The request may sleep until the daemon replies. */
+	.maxactive = 256,
+};

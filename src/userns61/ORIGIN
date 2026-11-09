@@ -88,6 +88,10 @@ Known gaps, to fix:
   make_kuid/make_kgid (src/userns61/live-fuse.c), so inode owners and
   stat results are correct and a child-owned mount's own tasks pass
   inode_permission. Request-header uid/gid are rewritten by a kretprobe
-  on fuse_get_req (unmapped ids become the overflow id); forced requests
+  on fuse_get_req (unmapped ids become the overflow id), and stat results
+  of fuse_do_getattr, which inlines fuse_fillattr, by a kretprobe on its
+  return. Device (FUSE build, ...49e011a9aa4b): fuse-overlayfs in
+  `unshare -rm` creates and reads files owned 0:0, and rootless Podman runs
+  on the overlay driver with fuse-overlayfs. Forced requests
   and ACLs still use native identity; FUSE-BPF, fuseblk and passthrough
   are unchanged.

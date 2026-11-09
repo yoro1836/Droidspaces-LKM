@@ -251,6 +251,7 @@ NS_OWNER_RETURN(copy_time_ns, struct time_namespace, CLONE_NEWTIME);
 
 #ifdef DS_USERNS_FUSE
 extern struct kretprobe ds_fuse_get_req_probe;
+extern struct kretprobe ds_fuse_do_getattr_probe;
 #endif
 
 static struct kretprobe *const mount_probes[] = {
@@ -258,7 +259,7 @@ static struct kretprobe *const mount_probes[] = {
 	&fs_context_reconfigure_probe, &sget_fc_probe,
 	&copy_utsname_probe, &copy_cgroup_ns_probe, &copy_time_ns_probe,
 #ifdef DS_USERNS_FUSE
-	&ds_fuse_get_req_probe,
+	&ds_fuse_get_req_probe, &ds_fuse_do_getattr_probe,
 #endif
 };
 
