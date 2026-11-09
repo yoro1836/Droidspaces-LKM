@@ -92,13 +92,31 @@ DEVTMPFS
 }
 
 # One pass over kallsyms; three-field lines are vmlinux (module lines add [name]).
-ds_devtmpfs_symbols_present() {
-    awk 'NR == FNR { if ($0 != "") want[$0] = 1; next }
+# Usage: ds_symbols_present <symbol list file> <label>
+ds_symbols_present() {
+    awk -v label="$2" 'NR == FNR { if ($0 != "") want[$0] = 1; next }
          NF == 3 && ($3 in want) { delete want[$3] }
          END {
              for (s in want) missing = missing " " s
-             if (missing != "") { print "devtmpfs: missing kernel symbols:" missing; exit 1 }
-         }' "$MODDIR/kernel/$DS_DEV_SYMS" "$DS_KALLSYMS"
+             if (missing != "") { print label ": missing kernel symbols:" missing; exit 1 }
+         }' "$1" "$DS_KALLSYMS"
+}
+
+ds_devtmpfs_symbols_present() {
+    ds_symbols_present "$MODDIR/kernel/$DS_DEV_SYMS" devtmpfs
+}
+
+# Vendor-header payloads leave non-KMI symbols to kallsyms; when the package
+# ships <payload>.syms, every listed symbol must exist before loading.
+ds_payload_symbols_present() {
+    [ -s "$MODDIR/kernel/$DS_PAYLOAD.syms" ] || return 0
+    ds_symbols_present "$MODDIR/kernel/$DS_PAYLOAD.syms" droidspaces_ns
+}
+
+# "PID / IPC", plus "/ user" when the payload provides user namespaces.
+ds_ns_label() {
+    DS_NS_LABEL='PID / IPC'
+    [ -e "$DS_PROC_NS/user" ] && DS_NS_LABEL='PID / IPC / user'
 }
 
 # Runs once PID / IPC is active. Sets DS_DEV_NOTE for the final status;
@@ -149,10 +167,11 @@ ds_load() {
         return 1
     fi
     if ds_active; then
+        ds_ns_label
         if ds_devtmpfs_load; then
-            ds_status "[已加载] ${DS_KMI}：PID / IPC namespace${DS_DEV_NOTE} 已激活（本次开机已加载）；更换 .ko 需重启。"
+            ds_status "[已加载] ${DS_KMI}：${DS_NS_LABEL} namespace${DS_DEV_NOTE} 已激活（本次开机已加载）；更换 .ko 需重启。"
         else
-            ds_status "[部分加载] ${DS_KMI}：PID / IPC namespace 已激活${DS_DEV_NOTE}。"
+            ds_status "[部分加载] ${DS_KMI}：${DS_NS_LABEL} namespace 已激活${DS_DEV_NOTE}。"
         fi
         return 0
     fi
@@ -172,6 +191,10 @@ ds_load() {
         ds_status "[不兼容] ${DS_KMI}：内核 ABI 或构建指纹校验失败，未加载；详见 load.log。"
         return 1
     fi
+    if ! ds_payload_symbols_present; then
+        ds_status "[不兼容] ${DS_KMI}：droidspaces_ns 所需内核符号缺失，未加载；详见 load.log。"
+        return 1
+    fi
     ds_status "[加载中] ${DS_KMI}：正在激活 PID / IPC namespace。"
     "$DS_KSUD" insmod "$MODDIR/kernel/$DS_PAYLOAD" gki=1 activate=1
     ds_result=$?
@@ -183,9 +206,10 @@ ds_load() {
         ds_status '[加载失败] insmod 已返回成功，但 activate 或 PID / IPC namespace 检查未通过；详见 load.log。'
         return 1
     fi
+    ds_ns_label
     if ! ds_devtmpfs_load; then
-        ds_status "[部分加载] ${DS_KMI}：PID / IPC namespace 已激活${DS_DEV_NOTE}。"
+        ds_status "[部分加载] ${DS_KMI}：${DS_NS_LABEL} namespace 已激活${DS_DEV_NOTE}。"
         return 0
     fi
-    ds_status "[已加载] ${DS_KMI}：PID / IPC namespace${DS_DEV_NOTE} 已激活；更换 .ko 需重启。"
+    ds_status "[已加载] ${DS_KMI}：${DS_NS_LABEL} namespace${DS_DEV_NOTE} 已激活；更换 .ko 需重启。"
 }

@@ -42,18 +42,33 @@ def devtmpfs_files(path, kmi):
             'kernel/devtmpfs.tsv': f'{kmi}|{ko}|{syms}\n'.encode()}, data
 
 
-def package(family, label, output, devtmpfs=None):
+def unresolved_symbols(path):
+    nm = subprocess.run(['llvm-nm', '-u', str(path)], capture_output=True, text=True, check=True)
+    return sorted(set(nm.stdout.split()[1::2]))
+
+
+def package(family, label, output, devtmpfs=None, ns=None):
     target = TARGETS[family]
     kmi = target['kmi']
     out = ROOT / 'out/gki' / kmi
-    payload = (out / 'droidspaces_ns.ko').read_bytes()
-    PACKAGE['arm64'](payload)
-    build = json.loads((out / 'build.json').read_text())
-    if build['sources'] != BUILD['source_hashes'](target) or build['module_sha256'] != sha(payload):
-        raise ValueError(f'{kmi}: sources or payload changed since build')
     prepared = json.loads((out / 'prepared.json').read_text())
-    if prepared['droidspaces_ns.ko'] != sha(payload):
-        raise ValueError(f'{kmi}: ABI constraints were prepared for a different payload')
+    if ns:
+        # Vendor-header build (scripts/build-samsung.py): no BTF of its own.
+        # The GKI build's ABI constraints still gate on the kernel's layout,
+        # and its unresolved symbols ship as <payload>.syms for the loader.
+        payload = Path(ns).read_bytes()
+        PACKAGE['arm64'](payload)
+        modinfo = runpy.run_path(str(ROOT / 'scripts/abi/prepare-device-vm.py'))['modinfo'](payload)[2]
+        if b'parmtype=gki:bool' not in modinfo.split(b'\0'):
+            raise ValueError('namespace module lacks the gki loading interface')
+    else:
+        payload = (out / 'droidspaces_ns.ko').read_bytes()
+        PACKAGE['arm64'](payload)
+        build = json.loads((out / 'build.json').read_text())
+        if build['sources'] != BUILD['source_hashes'](target) or build['module_sha256'] != sha(payload):
+            raise ValueError(f'{kmi}: sources or payload changed since build')
+        if prepared['droidspaces_ns.ko'] != sha(payload):
+            raise ValueError(f'{kmi}: ABI constraints were prepared for a different payload')
     abi = (out / f'{kmi}.abi').read_bytes()
     notes = (out / 'kernel.notes').read_bytes()
     if prepared[f'{kmi}.abi'] != sha(abi) or prepared['kernel.notes'] != sha(notes):
@@ -81,6 +96,8 @@ def package(family, label, output, devtmpfs=None):
     files['kernel/' + abiname] = abi
     files['kernel/' + notesname] = notes
     files['kernel/manifest.tsv'] = f'{kmi}|{ko}|{abiname}|{notesname}\n'.encode()
+    if ns:
+        files[f'kernel/{ko}.syms'] = ''.join(f'{x}\n' for x in unresolved_symbols(ns)).encode()
     dev_note = ''
     if devtmpfs:
         dev_files, dev_data = devtmpfs_files(devtmpfs, kmi)
@@ -98,7 +115,8 @@ def package(family, label, output, devtmpfs=None):
     files['SOURCE.txt'] = (
         'Source: https://github.com/Shikochin/Droidspaces-LKM\n'
         f'Commit: {commit}\nRelease: {version} (device test, single KMI {kmi})\n'
-        f'Payload SHA-256: {sha(payload)}\n'
+        f'Payload SHA-256: {sha(payload)}'
+        f'{" (vendor-header build, scripts/build-samsung.py)" if ns else ""}\n'
         f'{dev_note}'
         'Not VM-validated by this packager; validated on the device named in the label.\n'
         'The boot loader still checks the kernel BTF against the bundled ABI constraints.\n'
@@ -123,9 +141,11 @@ if __name__ == '__main__':
     parser.add_argument('--label', required=True,
                         help='device tag appended to the version, e.g. samsung-e1s')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/device')
+    parser.add_argument('--ns', type=Path,
+                        help='vendor-header namespace module instead of the GKI build')
     parser.add_argument('--devtmpfs', type=Path,
                         help='optional devtmpfs module (e.g. from scripts/build-samsung.py)')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]*', args.label):
         parser.error('label must be lowercase letters, digits, dots and hyphens')
-    package(args.family, args.label, args.output, args.devtmpfs)
+    package(args.family, args.label, args.output, args.devtmpfs, args.ns)

@@ -64,6 +64,7 @@ esac
 mkdir -p "$FAKE_ROOT/sys/parameters" "$FAKE_ROOT/ns"
 printf 'Y\\n' > "$FAKE_ROOT/sys/parameters/activate"
 touch "$FAKE_ROOT/ns/pid" "$FAKE_ROOT/ns/pid_for_children" "$FAKE_ROOT/ns/ipc"
+[ "$FAKE_USERNS" != 1 ] || touch "$FAKE_ROOT/ns/user"
 ''')
         self.ksud.chmod(0o755)
 
@@ -78,7 +79,15 @@ touch "$FAKE_ROOT/ns/pid" "$FAKE_ROOT/ns/pid_for_children" "$FAKE_ROOT/ns/ipc"
             sums += f'{hashlib.sha256((kernel / name).read_bytes()).hexdigest()}  {name}\n'
         (kernel / 'SHA256SUMS').write_text(sums)
 
-    def run_loader(self, mode='success', release=RELEASE, config='ok', command='ds_load', dev='ok'):
+    def add_ns_symbols(self, symbols, kmi='android16-6.12'):
+        kernel = self.module / 'kernel'
+        name = f'droidspaces_ns-{kmi}.ko.syms'
+        (kernel / name).write_text(''.join(f'{s}\n' for s in symbols))
+        sums = (kernel / 'SHA256SUMS').read_text()
+        sums += f'{hashlib.sha256((kernel / name).read_bytes()).hexdigest()}  {name}\n'
+        (kernel / 'SHA256SUMS').write_text(sums)
+
+    def run_loader(self, mode='success', release=RELEASE, config='ok', command='ds_load', dev='ok', userns=False):
         script = '''
 MODDIR=$FAKE_ROOT/module
 . "$MODDIR/common.sh"
@@ -100,7 +109,7 @@ uname() {
         result = subprocess.run([*shell, '-c', script], text=True, capture_output=True,
                                 env={**os.environ, 'FAKE_ROOT': str(self.root),
                                      'FAKE_MODE': mode, 'FAKE_RELEASE': release, 'FAKE_CONFIG': config,
-                                     'FAKE_DEV': dev})
+                                     'FAKE_DEV': dev, 'FAKE_USERNS': '1' if userns else '0'})
         self.status = (self.module / 'status.txt').read_text()
         return result
 
@@ -263,6 +272,25 @@ uname() {
         self.assertNotEqual(self.run_loader().returncode, 0)
         self.assertIn('SHA-256', self.status)
         self.assertFalse((self.root / 'insmod-calls').exists())
+
+    def test_ns_symbols_checked_before_insmod(self):
+        self.add_ns_symbols(['kdp_usecount_inc', 'missing_in_kernel'])
+        r = self.run_loader()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('[不兼容]', self.status)
+        self.assertIn('missing_in_kernel', r.stdout)
+        self.assertFalse((self.root / 'insmod-calls').exists())
+
+    def test_ns_symbols_present_loads(self):
+        self.add_ns_symbols(['kdp_usecount_inc', 'devices_kset'])
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('[已加载]', self.status)
+
+    def test_user_namespace_shown_in_status(self):
+        r = self.run_loader(userns=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('PID / IPC / user namespace 已激活', self.status)
 
 
 if __name__ == '__main__':
