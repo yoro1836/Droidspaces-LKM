@@ -267,8 +267,10 @@ struct ds_kprobe {
 	const char *name;
 	unsigned long replacement;
 	bool syscall;
+	/* Nonzero: redirect only when the second argument has one of these bits. */
+	unsigned long arg1_mask;
 };
-static struct ds_kprobe ds_kps[ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks) + 2 + ARRAY_SIZE(ipc_syscalls)];
+static struct ds_kprobe ds_kps[ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks) + 2 + ARRAY_SIZE(ipc_syscalls) + 1];
 static unsigned int ds_kp_count;
 static bool ds_kp_live;
 
@@ -278,6 +280,8 @@ static int ds_kp_pre(struct kprobe *p, struct pt_regs *regs)
 	unsigned long target = k->replacement;
 
 	if (!READ_ONCE(ds_kp_live) || regs->regs[16] == DS_KP_MAGIC)
+		return 0;
+	if (k->arg1_mask && !(regs->regs[1] & k->arg1_mask))
 		return 0;
 	if (k->syscall) {
 		/* Native wrappers take the user pt_regs; unimplemented IPC
@@ -630,6 +634,20 @@ static int install_kprobes(void)
 	ret = ds_kp_add("fini_seq_pidns", bpf_hooks[1].saved, bpf_hooks[1].replacement, false);
 	if (ret)
 		goto fail;
+#ifdef DS_USERNS_LIVE
+	/*
+	 * clone(CLONE_NEWUSER): only forks with that flag use the module's copy
+	 * of the vendor copy_creds(); all others run the native function.
+	 */
+	{
+		unsigned long addr = kallsyms_name_to_addr("copy_creds");
+
+		ret = addr ? ds_kp_add("copy_creds", addr, (unsigned long)ds_copy_creds, false) : -ENOENT;
+		if (ret)
+			goto fail;
+		ds_kps[ds_kp_count - 1].arg1_mask = CLONE_NEWUSER;
+	}
+#endif
 	ret = stop_machine(kp_go_live, NULL, NULL);
 	if (ret)
 		goto fail;
