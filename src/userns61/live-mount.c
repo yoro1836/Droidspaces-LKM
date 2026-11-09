@@ -166,6 +166,16 @@ static int sget_fc_return(struct kretprobe_instance *ri, struct pt_regs *regs)
 		return 0;
 	ns = child_userns(fc->user_ns);
 	/*
+	 * mq_create_mount() makes each IPC namespace's internal mqueue
+	 * super_block and sets fc->user_ns after fs_context_for_mount()
+	 * returns, through the no-op native get_user_ns(). Take the owner
+	 * from the IPC namespace (fc->s_fs_info for mqueue) as upstream
+	 * does, or a later mount inside the namespace finds a mismatching
+	 * owner and fails with EBUSY.
+	 */
+	if (!ns && fc->s_fs_info && !strcmp(fc->fs_type->name, "mqueue"))
+		ns = child_userns(((struct ipc_namespace *)fc->s_fs_info)->user_ns);
+	/*
 	 * An existing super_block is only returned when its owner already
 	 * equals fc->user_ns; a new one still carries init_user_ns. Apply
 	 * what alloc_super() does for a non-initial owner.
