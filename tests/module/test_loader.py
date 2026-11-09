@@ -39,6 +39,9 @@ class LoaderTests(unittest.TestCase):
         checker.write_text('#!/bin/sh\n[ "$FAKE_MODE" != abi_error ]\n')
         checker.chmod(0o755)
         (self.root / 'btf').write_bytes(b'mocked kernel BTF')
+        (self.root / 'kallsyms').write_text(
+            '0000000000000000 T kdp_usecount_inc\n0000000000000000 D devices_kset\n'
+            '0000000000000000 t helper\t[kernelsu]\n')
         self.ksud = self.root / 'ksud'
         self.ksud.write_text('''#!/bin/sh
 if [ "$1" = module ]; then
@@ -48,6 +51,14 @@ if [ "$1" = module ]; then
 fi
 [ "$1" = insmod ] || exit 2
 printf '%s\\n' "$*" >> "$FAKE_ROOT/insmod-calls"
+case "$2" in
+    *devtmpfs*)
+        [ "$FAKE_DEV" != error ] || exit 19
+        mkdir -p "$FAKE_ROOT/devsys/parameters"
+        printf 'Y\\n' > "$FAKE_ROOT/devsys/parameters/ready"
+        if [ "$FAKE_DEV" = errors ]; then echo 3; else echo 0; fi > "$FAKE_ROOT/devsys/parameters/errors"
+        exit 0;;
+esac
 [ "$FAKE_MODE" != error ] || exit 17
 [ "$FAKE_MODE" != incomplete ] || exit 0
 mkdir -p "$FAKE_ROOT/sys/parameters" "$FAKE_ROOT/ns"
@@ -56,7 +67,18 @@ touch "$FAKE_ROOT/ns/pid" "$FAKE_ROOT/ns/pid_for_children" "$FAKE_ROOT/ns/ipc"
 ''')
         self.ksud.chmod(0o755)
 
-    def run_loader(self, mode='success', release=RELEASE, config='ok', command='ds_load'):
+    def add_devtmpfs(self, kmi='android16-6.12', symbols=('kdp_usecount_inc', 'devices_kset')):
+        kernel = self.module / 'kernel'
+        ko, syms = f'droidspaces_devtmpfs-{kmi}.ko', f'{kmi}.devtmpfs.syms'
+        (kernel / ko).write_bytes(b'fake devtmpfs, never passed to the real kernel')
+        (kernel / syms).write_text(''.join(f'{s}\n' for s in symbols))
+        (kernel / 'devtmpfs.tsv').write_text(f'{kmi}|{ko}|{syms}\n')
+        sums = (kernel / 'SHA256SUMS').read_text()
+        for name in (ko, syms, 'devtmpfs.tsv'):
+            sums += f'{hashlib.sha256((kernel / name).read_bytes()).hexdigest()}  {name}\n'
+        (kernel / 'SHA256SUMS').write_text(sums)
+
+    def run_loader(self, mode='success', release=RELEASE, config='ok', command='ds_load', dev='ok'):
         script = '''
 MODDIR=$FAKE_ROOT/module
 . "$MODDIR/common.sh"
@@ -65,6 +87,8 @@ DS_BTF=$FAKE_ROOT/btf
 DS_KERNEL_NOTES=$FAKE_ROOT/kernel.notes
 DS_MODULE_SYS=$FAKE_ROOT/sys
 DS_PROC_NS=$FAKE_ROOT/ns
+DS_DEV_SYS=$FAKE_ROOT/devsys
+DS_KALLSYMS=$FAKE_ROOT/kallsyms
 uname() {
     case "$1" in
         -m) printf 'aarch64\\n';;
@@ -75,7 +99,8 @@ uname() {
         shell = shlex.split(os.environ.get('LOADER_TEST_SHELL', 'sh'))
         result = subprocess.run([*shell, '-c', script], text=True, capture_output=True,
                                 env={**os.environ, 'FAKE_ROOT': str(self.root),
-                                     'FAKE_MODE': mode, 'FAKE_RELEASE': release, 'FAKE_CONFIG': config})
+                                     'FAKE_MODE': mode, 'FAKE_RELEASE': release, 'FAKE_CONFIG': config,
+                                     'FAKE_DEV': dev})
         self.status = (self.module / 'status.txt').read_text()
         return result
 
@@ -181,6 +206,63 @@ uname() {
         self.assertEqual(self.run_loader(config='fail', command="ds_status '[待加载] 本次开机尚未加载'").returncode, 0)
         self.assertIn('description=[待加载]', (self.module / 'module.prop').read_text())
         self.assertEqual((self.module / 'module.prop').read_text().count('description='), 1)
+
+    def test_without_devtmpfs_manifest_status_is_unchanged(self):
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertIn('PID / IPC namespace 已激活；', self.status)
+        self.assertNotIn('devtmpfs', self.status)
+
+    def test_devtmpfs_loads_after_namespace(self):
+        self.add_devtmpfs()
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.root / 'insmod-calls').read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn('droidspaces_ns-android16-6.12.ko', calls[0])
+        self.assertIn('droidspaces_devtmpfs-android16-6.12.ko gki=1', calls[1])
+        self.assertIn('[已加载]', self.status)
+        self.assertIn('与 devtmpfs', self.status)
+
+    def test_devtmpfs_missing_symbol_skips_insmod(self):
+        self.add_devtmpfs(symbols=('kdp_usecount_inc', 'not_in_this_kernel'))
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('not_in_this_kernel', r.stdout)
+        self.assertEqual(len((self.root / 'insmod-calls').read_text().splitlines()), 1)
+        self.assertIn('[部分加载]', self.status)
+        self.assertIn('符号缺失', self.status)
+
+    def test_devtmpfs_symbol_match_is_exact(self):
+        # 'helper' exists only as a module symbol line ending in [kernelsu].
+        self.add_devtmpfs(symbols=('helper',))
+        self.run_loader()
+        self.assertIn('符号缺失', self.status)
+
+    def test_devtmpfs_failure_keeps_namespace_result(self):
+        self.add_devtmpfs()
+        self.assertEqual(self.run_loader(dev='error').returncode, 0)
+        self.assertIn('[部分加载]', self.status)
+        self.assertIn('返回 19', self.status)
+        self.assertTrue((self.root / 'sys/parameters/activate').exists())
+
+    def test_devtmpfs_errors_reported(self):
+        self.add_devtmpfs()
+        self.run_loader(dev='errors')
+        self.assertIn('[部分加载]', self.status)
+
+    def test_devtmpfs_loaded_once_per_boot(self):
+        self.add_devtmpfs()
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertEqual(len((self.root / 'insmod-calls').read_text().splitlines()), 2)
+        self.assertIn('与 devtmpfs 已激活（本次开机已加载）', self.status)
+
+    def test_devtmpfs_payload_covered_by_checksums(self):
+        self.add_devtmpfs()
+        (self.module / 'kernel/droidspaces_devtmpfs-android16-6.12.ko').write_bytes(b'corrupt')
+        self.assertNotEqual(self.run_loader().returncode, 0)
+        self.assertIn('SHA-256', self.status)
+        self.assertFalse((self.root / 'insmod-calls').exists())
 
 
 if __name__ == '__main__':

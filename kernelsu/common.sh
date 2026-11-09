@@ -4,6 +4,8 @@
 DS_BTF=/sys/kernel/btf/vmlinux
 DS_KERNEL_NOTES=/sys/kernel/notes
 DS_MODULE_SYS=/sys/module/droidspaces_ns
+DS_DEV_SYS=/sys/module/droidspaces_devtmpfs
+DS_KALLSYMS=/proc/kallsyms
 DS_PROC_NS=/proc/self/ns
 DS_KSUD=/data/adb/ksud
 [ -x "$DS_KSUD" ] || DS_KSUD=/data/adb/ksu/bin/ksud
@@ -66,6 +68,65 @@ ds_payload_valid() {
     (cd "$MODDIR/kernel" && sha256sum -c SHA256SUMS)
 }
 
+ds_dev_active() {
+    [ "$(cat "$DS_DEV_SYS/parameters/ready" 2>/dev/null)" = Y ] &&
+    [ "$(cat "$DS_DEV_SYS/parameters/errors" 2>/dev/null)" = 0 ]
+}
+
+# Optional devtmpfs payload: kernel/devtmpfs.tsv rows "kmi|module.ko|symbols".
+# Vendor-header builds (Samsung KDP) leave non-KMI symbols unversioned for ksud
+# to resolve from kallsyms; every listed symbol must exist before loading.
+ds_devtmpfs_entry() {
+    DS_DEV_PAYLOAD=''
+    DS_DEV_SYMS=''
+    [ -r "$MODDIR/kernel/devtmpfs.tsv" ] || return 1
+    ds_dev_row=$(awk -F '|' -v kmi="$DS_KMI" '$1 == kmi { row=$0; count++ } END { if (count==1) print row; else exit 1 }' "$MODDIR/kernel/devtmpfs.tsv") || return 1
+    IFS='|' read -r ds_dev_kmi DS_DEV_PAYLOAD DS_DEV_SYMS ds_dev_extra <<DEVTMPFS
+$ds_dev_row
+DEVTMPFS
+    [ "$ds_dev_kmi" = "$DS_KMI" ] && [ -z "$ds_dev_extra" ] || return 1
+    for ds_name in "$DS_DEV_PAYLOAD" "$DS_DEV_SYMS"; do
+        case "$ds_name" in ''|.*|*[!a-zA-Z0-9._-]*) return 1;; esac
+    done
+    [ -s "$MODDIR/kernel/$DS_DEV_PAYLOAD" ] && [ -s "$MODDIR/kernel/$DS_DEV_SYMS" ]
+}
+
+# One pass over kallsyms; three-field lines are vmlinux (module lines add [name]).
+ds_devtmpfs_symbols_present() {
+    awk 'NR == FNR { if ($0 != "") want[$0] = 1; next }
+         NF == 3 && ($3 in want) { delete want[$3] }
+         END {
+             for (s in want) missing = missing " " s
+             if (missing != "") { print "devtmpfs: missing kernel symbols:" missing; exit 1 }
+         }' "$MODDIR/kernel/$DS_DEV_SYMS" "$DS_KALLSYMS"
+}
+
+# Runs once PID / IPC is active. Sets DS_DEV_NOTE for the final status;
+# a devtmpfs problem never undoes the namespace result.
+ds_devtmpfs_load() {
+    DS_DEV_NOTE=''
+    ds_devtmpfs_entry || return 0
+    if ds_dev_active; then
+        DS_DEV_NOTE=' 与 devtmpfs'
+        return 0
+    fi
+    if [ -d "$DS_DEV_SYS" ]; then
+        DS_DEV_NOTE='；devtmpfs 已存在但 ready/errors 检查未通过，请重启'
+        return 1
+    fi
+    if ! ds_devtmpfs_symbols_present; then
+        DS_DEV_NOTE='；devtmpfs 所需内核符号缺失，未加载（详见 load.log）'
+        return 1
+    fi
+    "$DS_KSUD" insmod "$MODDIR/kernel/$DS_DEV_PAYLOAD" gki=1
+    ds_result=$?
+    if [ "$ds_result" -ne 0 ] || ! ds_dev_active; then
+        DS_DEV_NOTE="；devtmpfs 返回 ${ds_result} 或 ready/errors 检查未通过（详见 load.log）"
+        return 1
+    fi
+    DS_DEV_NOTE=' 与 devtmpfs'
+}
+
 # KMI is a routing key; internal namespace hooks also require matching host ABI.
 ds_abi_compatible() {
     if [ -r "$DS_BTF" ]; then
@@ -88,7 +149,11 @@ ds_load() {
         return 1
     fi
     if ds_active; then
-        ds_status "[已加载] ${DS_KMI}：PID / IPC namespace 已激活（本次开机已加载）；更换 .ko 需重启。"
+        if ds_devtmpfs_load; then
+            ds_status "[已加载] ${DS_KMI}：PID / IPC namespace${DS_DEV_NOTE} 已激活（本次开机已加载）；更换 .ko 需重启。"
+        else
+            ds_status "[部分加载] ${DS_KMI}：PID / IPC namespace 已激活${DS_DEV_NOTE}。"
+        fi
         return 0
     fi
     if [ -d "$DS_MODULE_SYS" ]; then
@@ -118,5 +183,9 @@ ds_load() {
         ds_status '[加载失败] insmod 已返回成功，但 activate 或 PID / IPC namespace 检查未通过；详见 load.log。'
         return 1
     fi
-    ds_status "[已加载] ${DS_KMI}：PID / IPC namespace 已激活；更换 .ko 需重启。"
+    if ! ds_devtmpfs_load; then
+        ds_status "[部分加载] ${DS_KMI}：PID / IPC namespace 已激活${DS_DEV_NOTE}。"
+        return 0
+    fi
+    ds_status "[已加载] ${DS_KMI}：PID / IPC namespace${DS_DEV_NOTE} 已激活；更换 .ko 需重启。"
 }

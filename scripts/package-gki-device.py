@@ -25,7 +25,24 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def package(family, label, output):
+def devtmpfs_files(path, kmi):
+    """Vendor-header devtmpfs build and the kernel symbols it needs at load."""
+    data = Path(path).read_bytes()
+    PACKAGE['arm64'](data)
+    modinfo = runpy.run_path(str(ROOT / 'scripts/abi/prepare-device-vm.py'))['modinfo'](data)[2]
+    if b'parmtype=gki:bool' not in modinfo.split(b'\0'):
+        raise ValueError('devtmpfs module lacks the gki loading interface')
+    nm = subprocess.run(['llvm-nm', '-u', str(path)], capture_output=True, text=True, check=True)
+    symbols = sorted(set(nm.stdout.split()[1::2]))
+    if not symbols:
+        raise ValueError('devtmpfs module has no unresolved symbols; wrong file?')
+    ko, syms = f'droidspaces_devtmpfs-{kmi}.ko', f'{kmi}.devtmpfs.syms'
+    return {f'kernel/{ko}': data,
+            f'kernel/{syms}': ''.join(f'{s}\n' for s in symbols).encode(),
+            'kernel/devtmpfs.tsv': f'{kmi}|{ko}|{syms}\n'.encode()}, data
+
+
+def package(family, label, output, devtmpfs=None):
     target = TARGETS[family]
     kmi = target['kmi']
     out = ROOT / 'out/gki' / kmi
@@ -64,6 +81,12 @@ def package(family, label, output):
     files['kernel/' + abiname] = abi
     files['kernel/' + notesname] = notes
     files['kernel/manifest.tsv'] = f'{kmi}|{ko}|{abiname}|{notesname}\n'.encode()
+    dev_note = ''
+    if devtmpfs:
+        dev_files, dev_data = devtmpfs_files(devtmpfs, kmi)
+        files.update(dev_files)
+        dev_note = (f'devtmpfs SHA-256: {sha(dev_data)} (vendor-header build, '
+                    'scripts/build-samsung.py; symbols checked against kallsyms before load)\n')
     checksums = ''.join(f'{sha(data)}  {name.removeprefix("kernel/")}\n'
                         for name, data in sorted(files.items()) if name.startswith('kernel/'))
     checksums += f'{sha(helper)}  ../bin/abi-check\n'
@@ -76,6 +99,7 @@ def package(family, label, output):
         'Source: https://github.com/Shikochin/Droidspaces-LKM\n'
         f'Commit: {commit}\nRelease: {version} (device test, single KMI {kmi})\n'
         f'Payload SHA-256: {sha(payload)}\n'
+        f'{dev_note}'
         'Not VM-validated by this packager; validated on the device named in the label.\n'
         'The boot loader still checks the kernel BTF against the bundled ABI constraints.\n'
     ).encode()
@@ -99,7 +123,9 @@ if __name__ == '__main__':
     parser.add_argument('--label', required=True,
                         help='device tag appended to the version, e.g. samsung-e1s')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/device')
+    parser.add_argument('--devtmpfs', type=Path,
+                        help='optional devtmpfs module (e.g. from scripts/build-samsung.py)')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]*', args.label):
         parser.error('label must be lowercase letters, digits, dots and hyphens')
-    package(args.family, args.label, args.output)
+    package(args.family, args.label, args.output, args.devtmpfs)
