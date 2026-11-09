@@ -23,3 +23,11 @@ native copy_creds.
 Not a security boundary yet: file permission, capability-over-inode, stat,
 exec and other identity paths still use native checks (see src/userns
 live-*.c for what the 6.12 port additionally restores).
+
+Device validation (SM-S921N, S5E9945, 6.1.162-android14-11, Samsung EL2 kprobe
+mode, vendor-header build f0ace0b7...): activate=1 exposes /proc/self/ns/user;
+`droidspaces check` passes; inside a Droidspaces container with Allow
+Sandboxing, `unshare -r id` as uid 1000 reports uid=0 gid=0 and
+/proc/self/uid_map reads "0 1000 1"; PID and IPC namespaces still work from
+the same module. Known gap: getgroups returns unmapped host gids (no
+live-groups yet).
