@@ -71,7 +71,17 @@ void ds_fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
 	atomic64_set(&fc->attr_version, 1);
 	get_random_bytes(&fc->scramble_key, sizeof(fc->scramble_key));
 	fc->pid_ns = get_pid_ns(task_active_pid_ns(current));
+#ifdef DS_USERNS_LIVE
+	/*
+	 * Built without USER_NS, the native callers' user_ns argument is dead
+	 * and may not be passed at all; never read it. FUSE stays owned by
+	 * init_user_ns (child namespaces cannot mount it, see live-mount.c).
+	 */
+	(void)user_ns;
+	fc->user_ns = &init_user_ns;
+#else
 	fc->user_ns = get_user_ns(user_ns);
+#endif
 	fc->max_pages = FUSE_DEFAULT_MAX_PAGES_PER_REQ;
 	fc->max_pages_limit = FUSE_MAX_MAX_PAGES;
 

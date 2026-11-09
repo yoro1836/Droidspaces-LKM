@@ -232,8 +232,12 @@ static struct ds_hook hooks[] = {
 	/* Owners as seen from the caller's namespace (below KernelSU's newfstatat probe). */
 	HOOK("cp_new_stat", ds_cp_new_stat),
 	HOOK("cp_statx", ds_cp_statx),
-	/* Capabilities over inodes only within the caller's namespace. */
-	HOOK("privileged_wrt_inode_uidgid", ds_privileged_wrt_inode_uidgid),
+	/*
+	 * Capabilities over inodes only within the caller's namespace.
+	 * privileged_wrt_inode_uidgid itself is not hooked: unexported, with
+	 * its ns argument dead in this build, native callers may not pass it.
+	 * ds_capable_wrt_inode_uidgid calls the module copy directly.
+	 */
 	HOOK("capable_wrt_inode_uidgid", ds_capable_wrt_inode_uidgid),
 	HOOK("inode_owner_or_capable", ds_inode_owner_or_capable),
 	HOOK("chown_common", ds_chown_common),
@@ -647,12 +651,17 @@ int ds_hooks_install(void)
 		ret = install_kprobes();
 		if (ret)
 			module_put(THIS_MODULE);
-		return ret;
+	} else {
+		/* Objects in procfs can retain operation pointers after all tasks exit. */
+		__module_get(THIS_MODULE);
+		ret = stop_machine(install_stopped, NULL, NULL);
+		if (ret)
+			module_put(THIS_MODULE);
 	}
-	/* Objects in procfs can retain operation pointers after all tasks exit. */
-	__module_get(THIS_MODULE);
-	ret = stop_machine(install_stopped, NULL, NULL);
-	if (ret)
-		module_put(THIS_MODULE);
+#ifdef DS_USERNS_LIVE
+	/* Optional: without it, mounts from child user namespaces stay refused. */
+	if (!ret)
+		ds_userns_mount_register();
+#endif
 	return ret;
 }

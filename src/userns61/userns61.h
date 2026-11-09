@@ -41,4 +41,5 @@ bool ds_capable_wrt_inode_uidgid(struct user_namespace *mnt_userns, const struct
 bool ds_inode_owner_or_capable(struct user_namespace *mnt_userns, const struct inode *inode);
 int ds_chown_common(const struct path *path, uid_t user, gid_t group);
 long ds_do_faccessat(int dfd, const char __user *filename, int mode, int flags);
+int ds_userns_mount_register(void);
 #endif
