@@ -74,11 +74,18 @@ void ds_fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
 #ifdef DS_USERNS_LIVE
 	/*
 	 * Built without USER_NS, the native callers' user_ns argument is dead
-	 * and may not be passed at all; never read it. FUSE stays owned by
-	 * init_user_ns (child namespaces cannot mount it, see live-mount.c).
+	 * and may not be passed at all; never read it. fuse_conn_init() runs
+	 * in the mounting (or /dev/cuse opening) task, so take the owner from
+	 * its credentials instead. That is the namespace live-mount.c gives
+	 * the fs_context and super_block (fs_context_owner lists fuse), so
+	 * fc->user_ns matches sb->s_user_ns as upstream. A non-initial
+	 * current_user_ns() can only be a namespace this module created; for
+	 * everything else (Android's /storage) the owner stays init_user_ns
+	 * and get_user_ns() takes no reference. ds_fuse_delayed_release drops
+	 * the reference.
 	 */
 	(void)user_ns;
-	fc->user_ns = &init_user_ns;
+	fc->user_ns = get_user_ns(current_user_ns());
 #else
 	fc->user_ns = get_user_ns(user_ns);
 #endif
@@ -105,3 +112,45 @@ void ds_fuse_delayed_release(struct rcu_head *p)
 	put_user_ns(fc->user_ns);
 	fc->release(fc);
 }
+
+#ifdef DS_USERNS_LIVE
+#include "core.h"
+
+static bool *ds_fuse_sys_admin_access;
+
+/* Optional: without the symbol, behave as with the parameter off (default). */
+void ds_fuse_prepare(void)
+{
+	ds_fuse_sys_admin_access = (bool *)kallsyms_name_to_addr("allow_sys_admin_access");
+}
+
+/*
+ * Replaces the native fuse_allow_current_process(), vendor fs/fuse/dir.c.
+ * Built without USER_NS, its current_in_userns() is constant true, so an
+ * allow_other mount owned by a child namespace would admit every task.
+ * Upstream admits only tasks inside the connection's user namespace; for
+ * init-owned connections that is everyone, as natively.
+ */
+int ds_fuse_allow_current_process(struct fuse_conn *fc)
+{
+	const struct cred *cred;
+
+	if (ds_fuse_sys_admin_access && READ_ONCE(*ds_fuse_sys_admin_access) &&
+	    capable(CAP_SYS_ADMIN))
+		return 1;
+
+	if (fc->allow_other)
+		return current_in_userns(fc->user_ns);
+
+	cred = current_cred();
+	if (uid_eq(cred->euid, fc->user_id) &&
+	    uid_eq(cred->suid, fc->user_id) &&
+	    uid_eq(cred->uid,  fc->user_id) &&
+	    gid_eq(cred->egid, fc->group_id) &&
+	    gid_eq(cred->sgid, fc->group_id) &&
+	    gid_eq(cred->gid,  fc->group_id))
+		return 1;
+
+	return 0;
+}
+#endif

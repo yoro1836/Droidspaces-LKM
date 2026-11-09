@@ -80,4 +80,9 @@ Known gaps, to fix:
   means host gid 0 and unprivileged ICMP sockets fail for container root
   (gid 1000 on the host). "0 2147483647" works. Needs the handler to map
   through the writer's user namespace, as upstream.
-- FUSE mounts from a child user namespace (fuse-overlayfs) not yet ported.
+- FUSE (minimal): child namespaces may mount fuse; the fs_context, super
+  block and connection take the mounter's namespace as owner and allow_other
+  is confined to it (ds_fuse_allow_current_process). Request headers,
+  attributes, permission checks and ACLs still use the native identity
+  conversions, so ids are host kuids rather than mapped ids. FUSE-BPF,
+  fuseblk and passthrough are unchanged.

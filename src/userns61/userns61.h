@@ -45,4 +45,7 @@ int ds_userns_mount_register(void);
 int ds_cap_task_prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5);
 struct task_struct;
 int ds_copy_creds(struct task_struct *p, unsigned long clone_flags);
+struct fuse_conn;
+void ds_fuse_prepare(void);
+int ds_fuse_allow_current_process(struct fuse_conn *fc);
 #endif

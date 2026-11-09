@@ -20,12 +20,16 @@
  * reboot anyway (stage 2 replaces both). Objects created before activation,
  * and anything owned by init_user_ns, are never touched.
  *
- * fs_context owners are rewritten, as upstream, only for tmpfs, ramfs and
- * devpts (creator's namespace), sysfs (network namespace owner), mqueue (IPC
- * namespace owner) and cgroup2 (cgroup namespace owner). proc sets its own
- * owner in this module's proc_init_fs_context. Everything else, including
- * FUSE and overlayfs, keeps init_user_ns and stays unmountable from a child
- * user namespace. New UTS, cgroup and time namespaces get their creator's
+ * fs_context owners are rewritten, as upstream, only for tmpfs, ramfs,
+ * devpts and fuse (creator's namespace), sysfs (network namespace owner),
+ * mqueue (IPC namespace owner) and cgroup2 (cgroup namespace owner). proc
+ * sets its own owner in this module's proc_init_fs_context; fuse connections
+ * take the same owner in port61/fuse.c (ds_fuse_conn_init), and
+ * ds_fuse_allow_current_process confines allow_other to that namespace.
+ * FUSE request and attribute ids are still converted by native code, where
+ * from_kuid/make_kuid are identity. Everything else, including fuseblk and
+ * overlayfs, keeps init_user_ns and stays unmountable from a child user
+ * namespace. New UTS, cgroup and time namespaces get their creator's
  * user namespace as owner; network namespaces already do natively
  * (setup_net assigns net->user_ns directly).
  */
@@ -75,7 +79,8 @@ static struct user_namespace *fs_context_owner(const struct fs_context *fc)
 		return fc->root ? child_userns(fc->root->d_sb->s_user_ns) : NULL;
 	if (fc->purpose != FS_CONTEXT_FOR_MOUNT || !nsp)
 		return NULL;
-	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") || !strcmp(name, "devpts"))
+	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") ||
+	    !strcmp(name, "devpts") || !strcmp(name, "fuse"))
 		return child_userns(fc->cred->user_ns);
 	if (!strcmp(name, "sysfs"))
 		return child_userns(nsp->net_ns->user_ns);
