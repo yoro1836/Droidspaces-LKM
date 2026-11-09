@@ -435,3 +435,166 @@ int ds_cap_task_fix_setuid(struct cred *new, const struct cred *old, int flags)
 
 	return 0;
 }
+
+/*
+ * prctl() capability operations (vendor security/commoncap.c). Natively
+ * cap_prctl_drop() checks CAP_SETPCAP against init_user_ns, so a container
+ * runtime inside a user namespace cannot drop bounding-set capabilities.
+ * The other prctl paths only edit a prepared cred and commit it through the
+ * vendor's commit_creds().
+ */
+static int cap_prctl_drop(unsigned long cap)
+{
+	struct cred *new;
+
+	if (!ns_capable(current_user_ns(), CAP_SETPCAP))
+		return -EPERM;
+	if (!cap_valid(cap))
+		return -EINVAL;
+
+	new = prepare_creds();
+	if (!new)
+		return -ENOMEM;
+	cap_lower(new->cap_bset, cap);
+	return commit_creds(new);
+}
+
+/**
+ * cap_task_prctl - Implement process control functions for this security module
+ * @option: The process control function requested
+ * @arg2: The argument data for this function
+ * @arg3: The argument data for this function
+ * @arg4: The argument data for this function
+ * @arg5: The argument data for this function
+ *
+ * Allow process control functions (sys_prctl()) to alter capabilities; may
+ * also deny access to other functions not otherwise implemented here.
+ *
+ * Return: 0 or +ve on success, -ENOSYS if this function is not implemented
+ * here, other -ve on error.  If -ENOSYS is returned, sys_prctl() and other LSM
+ * modules will consider performing the function.
+ */
+int ds_cap_task_prctl(int option, unsigned long arg2, unsigned long arg3,
+		   unsigned long arg4, unsigned long arg5)
+{
+	const struct cred *old = current_cred();
+	struct cred *new;
+
+	switch (option) {
+	case PR_CAPBSET_READ:
+		if (!cap_valid(arg2))
+			return -EINVAL;
+		return !!cap_raised(old->cap_bset, arg2);
+
+	case PR_CAPBSET_DROP:
+		return cap_prctl_drop(arg2);
+
+	/*
+	 * The next four prctl's remain to assist with transitioning a
+	 * system from legacy UID=0 based privilege (when filesystem
+	 * capabilities are not in use) to a system using filesystem
+	 * capabilities only - as the POSIX.1e draft intended.
+	 *
+	 * Note:
+	 *
+	 *  PR_SET_SECUREBITS =
+	 *      issecure_mask(SECURE_KEEP_CAPS_LOCKED)
+	 *    | issecure_mask(SECURE_NOROOT)
+	 *    | issecure_mask(SECURE_NOROOT_LOCKED)
+	 *    | issecure_mask(SECURE_NO_SETUID_FIXUP)
+	 *    | issecure_mask(SECURE_NO_SETUID_FIXUP_LOCKED)
+	 *
+	 * will ensure that the current process and all of its
+	 * children will be locked into a pure
+	 * capability-based-privilege environment.
+	 */
+	case PR_SET_SECUREBITS:
+		if ((((old->securebits & SECURE_ALL_LOCKS) >> 1)
+		     & (old->securebits ^ arg2))			/*[1]*/
+		    || ((old->securebits & SECURE_ALL_LOCKS & ~arg2))	/*[2]*/
+		    || (arg2 & ~(SECURE_ALL_LOCKS | SECURE_ALL_BITS))	/*[3]*/
+		    || (cap_capable(current_cred(),
+				    current_cred()->user_ns,
+				    CAP_SETPCAP,
+				    CAP_OPT_NONE) != 0)			/*[4]*/
+			/*
+			 * [1] no changing of bits that are locked
+			 * [2] no unlocking of locks
+			 * [3] no setting of unsupported bits
+			 * [4] doing anything requires privilege (go read about
+			 *     the "sendmail capabilities bug")
+			 */
+		    )
+			/* cannot change a locked bit */
+			return -EPERM;
+
+		new = prepare_creds();
+		if (!new)
+			return -ENOMEM;
+		new->securebits = arg2;
+		return commit_creds(new);
+
+	case PR_GET_SECUREBITS:
+		return old->securebits;
+
+	case PR_GET_KEEPCAPS:
+		return !!issecure(SECURE_KEEP_CAPS);
+
+	case PR_SET_KEEPCAPS:
+		if (arg2 > 1) /* Note, we rely on arg2 being unsigned here */
+			return -EINVAL;
+		if (issecure(SECURE_KEEP_CAPS_LOCKED))
+			return -EPERM;
+
+		new = prepare_creds();
+		if (!new)
+			return -ENOMEM;
+		if (arg2)
+			new->securebits |= issecure_mask(SECURE_KEEP_CAPS);
+		else
+			new->securebits &= ~issecure_mask(SECURE_KEEP_CAPS);
+		return commit_creds(new);
+
+	case PR_CAP_AMBIENT:
+		if (arg2 == PR_CAP_AMBIENT_CLEAR_ALL) {
+			if (arg3 | arg4 | arg5)
+				return -EINVAL;
+
+			new = prepare_creds();
+			if (!new)
+				return -ENOMEM;
+			cap_clear(new->cap_ambient);
+			return commit_creds(new);
+		}
+
+		if (((!cap_valid(arg3)) | arg4 | arg5))
+			return -EINVAL;
+
+		if (arg2 == PR_CAP_AMBIENT_IS_SET) {
+			return !!cap_raised(current_cred()->cap_ambient, arg3);
+		} else if (arg2 != PR_CAP_AMBIENT_RAISE &&
+			   arg2 != PR_CAP_AMBIENT_LOWER) {
+			return -EINVAL;
+		} else {
+			if (arg2 == PR_CAP_AMBIENT_RAISE &&
+			    (!cap_raised(current_cred()->cap_permitted, arg3) ||
+			     !cap_raised(current_cred()->cap_inheritable,
+					 arg3) ||
+			     issecure(SECURE_NO_CAP_AMBIENT_RAISE)))
+				return -EPERM;
+
+			new = prepare_creds();
+			if (!new)
+				return -ENOMEM;
+			if (arg2 == PR_CAP_AMBIENT_RAISE)
+				cap_raise(new->cap_ambient, arg3);
+			else
+				cap_lower(new->cap_ambient, arg3);
+			return commit_creds(new);
+		}
+
+	default:
+		/* No functionality available - continue with default */
+		return -ENOSYS;
+	}
+}

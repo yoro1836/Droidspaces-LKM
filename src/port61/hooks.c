@@ -116,6 +116,7 @@ DECLARE_IPC_SYSCALL(getresuid);
 DECLARE_IPC_SYSCALL(getresgid);
 DECLARE_IPC_SYSCALL(getgroups);
 DECLARE_IPC_SYSCALL(setgroups);
+DECLARE_IPC_SYSCALL(chroot);
 #define ID_SYSCALL(name) { "__arm64_sys_" #name, __NR_##name, (unsigned long)__arm64_sys_ds_##name, 0 }
 #endif
 
@@ -159,6 +160,7 @@ static struct ds_syscall_hook ipc_syscalls[] = {
 #ifdef DS_USERNS_LIVE
 	ID_SYSCALL(getuid), ID_SYSCALL(geteuid), ID_SYSCALL(getgid), ID_SYSCALL(getegid),
 	ID_SYSCALL(getresuid), ID_SYSCALL(getresgid), ID_SYSCALL(getgroups), ID_SYSCALL(setgroups),
+	ID_SYSCALL(chroot),
 #endif
 };
 static unsigned long *syscall_table;
@@ -229,6 +231,7 @@ static struct ds_hook hooks[] = {
 	HOOK("may_setgroups", ds_identity_may_setgroups),
 	HOOK("cap_task_fix_setuid", ds_cap_task_fix_setuid),
 	HOOK("cap_bprm_creds_from_file", ds_cap_bprm_creds_from_file),
+	HOOK("cap_task_prctl", ds_cap_task_prctl),
 	/* Owners as seen from the caller's namespace (below KernelSU's newfstatat probe). */
 	HOOK("cp_new_stat", ds_cp_new_stat),
 	HOOK("cp_statx", ds_cp_statx),

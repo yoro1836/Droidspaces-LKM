@@ -20,11 +20,14 @@
  * reboot anyway (stage 2 replaces both). Objects created before activation,
  * and anything owned by init_user_ns, are never touched.
  *
- * fs_context owners are rewritten only for filesystems whose user namespace
- * semantics need nothing else from this port: tmpfs, ramfs, devpts, sysfs.
- * proc sets its own owner in this module's proc_init_fs_context. Everything
- * else, including FUSE and overlayfs, keeps init_user_ns and stays
- * unmountable from a child user namespace.
+ * fs_context owners are rewritten, as upstream, only for tmpfs, ramfs and
+ * devpts (creator's namespace), sysfs (network namespace owner), mqueue (IPC
+ * namespace owner) and cgroup2 (cgroup namespace owner). proc sets its own
+ * owner in this module's proc_init_fs_context. Everything else, including
+ * FUSE and overlayfs, keeps init_user_ns and stays unmountable from a child
+ * user namespace. New UTS, cgroup and time namespaces get their creator's
+ * user namespace as owner; network namespaces already do natively
+ * (setup_net assigns net->user_ns directly).
  */
 #include <linux/fs.h>
 #include <linux/fs_context.h>
@@ -35,6 +38,12 @@
 #include <linux/uaccess.h>
 #include <linux/user_namespace.h>
 #include <linux/cred.h>
+#include <linux/cgroup.h>
+#include <linux/ipc_namespace.h>
+#include <linux/nsproxy.h>
+#include <linux/time_namespace.h>
+#include <linux/utsname.h>
+#include <net/net_namespace.h>
 #include "mount.h"
 #include "userns61.h"
 
@@ -52,15 +61,29 @@ static struct user_namespace *child_userns(struct user_namespace *ns)
 	return ns;
 }
 
-static bool owner_follows_namespace(const struct file_system_type *type)
+/*
+ * The owner a new fs_context of this type gets upstream, read from the
+ * namespace that the filesystem's init_fs_context consulted (natively each
+ * stored init_user_ns through the no-op get_user_ns). NULL: leave it.
+ */
+static struct user_namespace *fs_context_owner(const struct fs_context *fc)
 {
-	static const char *const names[] = { "tmpfs", "ramfs", "devpts", "sysfs" };
-	unsigned int i;
+	const char *name = fc->fs_type->name;
+	struct nsproxy *nsp = current->nsproxy;
 
-	for (i = 0; i < ARRAY_SIZE(names); i++)
-		if (!strcmp(type->name, names[i]))
-			return true;
-	return false;
+	if (fc->purpose == FS_CONTEXT_FOR_RECONFIGURE)
+		return fc->root ? child_userns(fc->root->d_sb->s_user_ns) : NULL;
+	if (fc->purpose != FS_CONTEXT_FOR_MOUNT || !nsp)
+		return NULL;
+	if (!strcmp(name, "tmpfs") || !strcmp(name, "ramfs") || !strcmp(name, "devpts"))
+		return child_userns(fc->cred->user_ns);
+	if (!strcmp(name, "sysfs"))
+		return child_userns(nsp->net_ns->user_ns);
+	if (!strcmp(name, "mqueue"))
+		return child_userns(nsp->ipc_ns->user_ns);
+	if (!strcmp(name, "cgroup2"))
+		return child_userns(nsp->cgroup_ns->user_ns);
+	return NULL;
 }
 
 /* copy_mnt_ns(flags, ns, user_ns, new_fs) */
@@ -104,15 +127,11 @@ static struct kretprobe copy_mnt_ns_probe = {
 static int fs_context_return(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct fs_context *fc = (void *)regs_return_value(regs);
-	struct user_namespace *ns = NULL;
+	struct user_namespace *ns;
 
-	if (!READ_ONCE(mount_live) || IS_ERR_OR_NULL(fc) || fc->user_ns != &init_user_ns ||
-	    !owner_follows_namespace(fc->fs_type))
+	if (!READ_ONCE(mount_live) || IS_ERR_OR_NULL(fc) || fc->user_ns != &init_user_ns)
 		return 0;
-	if (fc->purpose == FS_CONTEXT_FOR_MOUNT)
-		ns = child_userns(fc->cred->user_ns);
-	else if (fc->purpose == FS_CONTEXT_FOR_RECONFIGURE && fc->root)
-		ns = child_userns(fc->root->d_sb->s_user_ns);
+	ns = fs_context_owner(fc);
 	if (ns)
 		fc->user_ns = get_user_ns(ns);
 	return 0;
@@ -166,20 +185,76 @@ static struct kretprobe sget_fc_probe = {
 	.maxactive = 32,
 };
 
+/*
+ * copy_utsname / copy_cgroup_ns / copy_time_ns (flags, user_ns, old_ns),
+ * called by this module's create_new_namespaces: a new namespace takes the
+ * creating user namespace as owner (hostname, cgroup and time changes are
+ * checked against it).
+ */
+struct copy_ns_args {
+	unsigned long flags;
+	struct user_namespace *user_ns;
+};
+
+static int copy_ns_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct copy_ns_args *a = (void *)ri->data;
+
+	a->flags = regs->regs[0];
+	a->user_ns = (struct user_namespace *)regs->regs[1];
+	return 0;
+}
+
+#define NS_OWNER_RETURN(fn, type, flag)						\
+static int fn##_return(struct kretprobe_instance *ri, struct pt_regs *regs)	\
+{										\
+	struct copy_ns_args *a = (void *)ri->data;				\
+	type *new_ns = (void *)regs_return_value(regs);				\
+	struct user_namespace *ns;						\
+										\
+	if (!READ_ONCE(mount_live) || !(a->flags & (flag)) || IS_ERR_OR_NULL(new_ns)) \
+		return 0;							\
+	ns = child_userns(a->user_ns);						\
+	if (ns && new_ns->user_ns == &init_user_ns)				\
+		new_ns->user_ns = get_user_ns(ns);				\
+	return 0;								\
+}										\
+static struct kretprobe fn##_probe = {						\
+	.kp.symbol_name = #fn,							\
+	.entry_handler = copy_ns_entry,						\
+	.handler = fn##_return,							\
+	.data_size = sizeof(struct copy_ns_args),				\
+	.maxactive = 32,							\
+}
+
+NS_OWNER_RETURN(copy_utsname, struct uts_namespace, CLONE_NEWUTS);
+NS_OWNER_RETURN(copy_cgroup_ns, struct cgroup_namespace, CLONE_NEWCGROUP);
+NS_OWNER_RETURN(copy_time_ns, struct time_namespace, CLONE_NEWTIME);
+
 static struct kretprobe *const mount_probes[] = {
 	&copy_mnt_ns_probe, &fs_context_mount_probe,
 	&fs_context_reconfigure_probe, &sget_fc_probe,
+	&copy_utsname_probe, &copy_cgroup_ns_probe, &copy_time_ns_probe,
 };
 
 int ds_userns_mount_register(void)
 {
-	int ret = register_kretprobes((struct kretprobe **)mount_probes, ARRAY_SIZE(mount_probes));
+	unsigned int i, ok = 0;
 
-	if (ret) {
-		pr_warn("userns: mount ownership probes unavailable (%d); mounts stay limited to init_user_ns\n", ret);
-		return ret;
+	/* Each probe is independent: a missing symbol only loses its own fix. */
+	for (i = 0; i < ARRAY_SIZE(mount_probes); i++) {
+		int ret = register_kretprobe(mount_probes[i]);
+
+		if (ret)
+			pr_warn("userns: %s owner probe unavailable (%d)\n",
+				mount_probes[i]->kp.symbol_name, ret);
+		else
+			ok++;
 	}
+	if (!ok)
+		return -ENOENT;
 	WRITE_ONCE(mount_live, true);
-	pr_info("userns: mount namespace, fs_context and super_block owners follow user namespaces\n");
+	pr_info("userns: %u/%zu namespace and mount owner probes active\n",
+		ok, ARRAY_SIZE(mount_probes));
 	return 0;
 }

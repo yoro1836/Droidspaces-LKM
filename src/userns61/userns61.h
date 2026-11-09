@@ -42,6 +42,7 @@ bool ds_inode_owner_or_capable(struct user_namespace *mnt_userns, const struct i
 int ds_chown_common(const struct path *path, uid_t user, gid_t group);
 long ds_do_faccessat(int dfd, const char __user *filename, int mode, int flags);
 int ds_userns_mount_register(void);
+int ds_cap_task_prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5);
 struct task_struct;
 int ds_copy_creds(struct task_struct *p, unsigned long clone_flags);
 #endif

@@ -19,6 +19,8 @@
 #include <linux/security.h>
 #include <linux/securebits.h>
 #include <linux/user_namespace.h>
+#include <linux/fs_struct.h>
+#include <linux/syscalls.h>
 #include "userns61.h"
 
 bool ds_privileged_wrt_inode_uidgid(struct user_namespace *ns,
@@ -236,4 +238,38 @@ out:
 		revert_creds(old_cred);
 
 	return res;
+}
+
+/* chroot(2): CAP_SYS_CHROOT in the caller's user namespace, as upstream. */
+SYSCALL_DEFINE1(ds_chroot, const char __user *, filename)
+{
+	struct path path;
+	int error;
+	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+retry:
+	error = user_path_at(AT_FDCWD, filename, lookup_flags, &path);
+	if (error)
+		goto out;
+
+	error = path_permission(&path, MAY_EXEC | MAY_CHDIR);
+	if (error)
+		goto dput_and_out;
+
+	error = -EPERM;
+	if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT))
+		goto dput_and_out;
+	error = security_path_chroot(&path);
+	if (error)
+		goto dput_and_out;
+
+	set_fs_root(current->fs, &path);
+	error = 0;
+dput_and_out:
+	path_put(&path);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+out:
+	return error;
 }
