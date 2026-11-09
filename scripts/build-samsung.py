@@ -51,6 +51,8 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=Path, required=True, help="device config (zcat /proc/config.gz)")
     parser.add_argument('--kdir', type=Path, required=True, help='output dir for the prepared vendor tree')
     parser.add_argument('--out', type=Path, help='module output dir (default out/samsung/<module>)')
+    parser.add_argument('--make', action='append', default=[], metavar='VAR=VALUE',
+                        help='extra make variable, e.g. --make USERNS61=1 (repeatable)')
     args = parser.parse_args()
 
     target = TARGETS[args.target]
@@ -66,6 +68,9 @@ if __name__ == '__main__':
     except ValueError:
         parser.error('--out must be inside the repository')
 
+    for var in args.make:
+        if not __import__('re').fullmatch(r'[A-Z0-9_]+=[A-Za-z0-9_./-]*', var):
+            parser.error(f'--make expects VAR=VALUE, got {var!r}')
     kdir.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.config, kdir / '.config')
@@ -80,7 +85,7 @@ if __name__ == '__main__':
     docker(image, [(source, '/ksrc', 'ro'), (kdir, '/kdir', ''), (ROOT, '/module', '')], '/module',
            f'make KDIR=/kdir {make_target} {dir_var}={target[key]} '
            f'GKI_ANDROID={target["kmi"].split("-")[0]} GKI_VERSION={args.target} '
-           f'OUT=/module/{out_rel} KBUILD_MODPOST_WARN=1 -j8')
+           f'OUT=/module/{out_rel} KBUILD_MODPOST_WARN=1 {" ".join(args.make)} -j8')
 
     module = out / ko
     unresolved = subprocess.run(['llvm-nm', '-u', str(module)], capture_output=True,

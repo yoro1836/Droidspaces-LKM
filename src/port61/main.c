@@ -8,6 +8,17 @@
 #include "port.h"
 #include "ipc-backend.h"
 #include "../gki-target.h"
+#ifdef DS_USERNS_LIVE
+#include "../userns61/userns61.h"
+
+static void ds_userns_undo(void)
+{
+	ds_userns_proc_cleanup();
+	ds_userns_core_exit();
+}
+#else
+static inline void ds_userns_undo(void) { }
+#endif
 
 extern void (*ds_proc_exit_connector)(struct task_struct *task);
 
@@ -79,15 +90,30 @@ static int __init ds_port_init(void)
 	if (!ds_proc_exit_connector &&
 	    !strcmp(utsname()->release, "6.6.127-4k-g46a034eca005-dirty"))
 		return -ENOENT;
+#ifdef DS_USERNS_LIVE
+	ret = ds_userns_core_init();
+	if (ret)
+		return ret;
+	ret = ds_userns_proc_prepare();
+	if (ret) {
+		ds_userns_core_exit();
+		return ret;
+	}
+#endif
 	ret = ds_hooks_prepare();
-	if (ret)
+	if (ret) {
+		ds_userns_undo();
 		return ret;
+	}
 	ret = ds_pid_init();
-	if (ret)
+	if (ret) {
+		ds_userns_undo();
 		return ret;
+	}
 	ret = ds_ipc_backend_init();
 	if (ret) {
 		ds_pid_exit();
+		ds_userns_undo();
 		return ret;
 	}
 	ret = ds_port_selftest();
@@ -95,6 +121,7 @@ static int __init ds_port_init(void)
 		ds_ipc_backend_exit();
 		ds_ipc_flush();
 		ds_pid_exit();
+		ds_userns_undo();
 		return ret;
 	}
 	if (activate) {
@@ -102,6 +129,7 @@ static int __init ds_port_init(void)
 		if (ret) {
 			ds_ipc_backend_exit();
 			ds_pid_exit();
+			ds_userns_undo();
 			return ret;
 		}
 		pr_info("experimental namespace hooks active; module stays pinned until reboot\n");
@@ -116,6 +144,7 @@ static void __exit ds_port_exit(void)
 	ds_ipc_backend_exit();
 	ds_ipc_flush();
 	ds_pid_exit();
+	ds_userns_undo();
 	pr_info("unloaded\n");
 }
 

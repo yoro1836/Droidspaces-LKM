@@ -105,6 +105,15 @@ DECLARE_IPC_SYSCALL(shmctl);
 DECLARE_IPC_SYSCALL(shmat);
 DECLARE_IPC_SYSCALL(shmdt);
 DECLARE_IPC_SYSCALL(reboot);
+#ifdef DS_USERNS_LIVE
+#include "../userns61/userns61.h"
+/* Native identity syscalls return raw kuids: the kernel lacks USER_NS. */
+DECLARE_IPC_SYSCALL(getuid);
+DECLARE_IPC_SYSCALL(geteuid);
+DECLARE_IPC_SYSCALL(getgid);
+DECLARE_IPC_SYSCALL(getegid);
+#define ID_SYSCALL(name) { "__arm64_sys_" #name, __NR_##name, (unsigned long)__arm64_sys_ds_##name, 0 }
+#endif
 
 
 struct ds_syscall_hook {
@@ -129,6 +138,9 @@ static struct ds_syscall_hook ipc_syscalls[] = {
 	IPC_SYSCALL(semget), IPC_SYSCALL(semctl), IPC_SYSCALL(semop), IPC_SYSCALL(semtimedop),
 	IPC_SYSCALL(shmget), IPC_SYSCALL(shmctl), IPC_SYSCALL(shmat), IPC_SYSCALL(shmdt),
 	{ "__arm64_sys_reboot", __NR_reboot, (unsigned long)__arm64_sys_ds_reboot, 0 },
+#ifdef DS_USERNS_LIVE
+	ID_SYSCALL(getuid), ID_SYSCALL(geteuid), ID_SYSCALL(getgid), ID_SYSCALL(getegid),
+#endif
 };
 static unsigned long *syscall_table;
 
@@ -175,6 +187,13 @@ static struct ds_hook hooks[] = {
 	HOOK("__arm64_sys_setns", __arm64_sys_ds_setns),
 	HOOK("proc_init_fs_context", ds_proc_init_fs_context),
 	HOOK("proc_kill_sb", ds_proc_kill_sb),
+#ifdef DS_USERNS_LIVE
+	/* Add uid_map, gid_map, projid_map and setgroups to /proc/<pid>[/task/<tid>]. */
+	HOOK("proc_tgid_base_lookup", ds_userns_tgid_lookup),
+	HOOK("proc_tid_base_lookup", ds_userns_tid_lookup),
+	HOOK("proc_tgid_base_readdir", ds_userns_tgid_readdir),
+	HOOK("proc_tid_base_readdir", ds_userns_tid_readdir),
+#endif
 };
 
 static struct ds_hook proc_hooks[2];

@@ -1,0 +1,25 @@
+Source: Android common kernel / Samsung S5E9945 vendor tree, kernel/user_namespace.c
+Vendor tree: 6.1.138 (notfleshka/android-kernel-samsung-e1s); device runs 6.1.162.
+Derived from src/userns/user_namespace.c (6.12 port) and reconciled with the
+vendor 6.1 file: no binfmt_misc member, kmemdup instead of kmemdup_array.
+live-proc.c matches the vendor fs/proc/base.c map/setgroups handlers.
+compat/linux/user_namespace.h is the vendor 6.1 header with init_user_ns
+treated as immortal (get/put skip it); layout is the vendor's.
+
+Stage 1 (USERNS61=1, DS_USERNS_PIN): user namespace creation via unshare,
+uid/gid/projid maps and setgroups through /proc/<pid>, setns into a user
+namespace, and getuid/geteuid/getgid/getegid mapped at output.
+
+Unlike src/userns, the native credential lifecycle (prepare_creds,
+commit_creds, __put_cred, put_cred_rcu, copy_creds) is NOT replaced: on
+Samsung KDP it allocates and seals creds through the hypervisor and must stay
+the vendor's. Because that native code was built without CONFIG_USER_NS, it
+never takes or drops user_ns references; DS_USERNS_PIN therefore holds one
+extra reference per namespace so none is freed while a cred may point to it.
+Each namespace stays allocated until reboot (stage 2 replaces this with
+reference tracking). clone(CLONE_NEWUSER) still fails with EINVAL through the
+native copy_creds.
+
+Not a security boundary yet: file permission, capability-over-inode, stat,
+exec and other identity paths still use native checks (see src/userns
+live-*.c for what the 6.12 port additionally restores).
