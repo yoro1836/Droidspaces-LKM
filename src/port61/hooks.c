@@ -115,6 +115,20 @@ DECLARE_IPC_SYSCALL(getegid);
 #define ID_SYSCALL(name) { "__arm64_sys_" #name, __NR_##name, (unsigned long)__arm64_sys_ds_##name, 0 }
 #endif
 
+/*
+ * Built without PID_NS/USER_NS, the kernel leaves init_pid_ns.ns.ops and
+ * init_user_ns.ns.ops NULL. Once /proc/<pid>/ns/{pid,user} exist, nsfs
+ * inodes point at these and nsfs_evict() calls ns->ops->put(), so both must
+ * be set whenever the namespace files are reachable.
+ */
+static void set_init_ns_ops(bool live)
+{
+	WRITE_ONCE(init_pid_ns.ns.ops, live ? &pidns_operations : NULL);
+#ifdef DS_USERNS_LIVE
+	WRITE_ONCE(init_user_ns.ns.ops, live ? &userns_operations : NULL);
+#endif
+}
+
 
 struct ds_syscall_hook {
 	const char *name;
@@ -401,11 +415,11 @@ static int install_stopped(void *unused)
 		if (ret)
 			goto rollback;
 	}
-	WRITE_ONCE(init_pid_ns.ns.ops, &pidns_operations);
+	set_init_ns_ops(true);
 	for (i = 0; i < ARRAY_SIZE(ipc_syscalls); i++) {
 		ret = write_syscall(&ipc_syscalls[i], false);
 		if (ret) {
-			WRITE_ONCE(init_pid_ns.ns.ops, NULL);
+			set_init_ns_ops(false);
 			goto rollback;
 		}
 	}
@@ -414,7 +428,7 @@ static int install_stopped(void *unused)
 		ret = write_pointer(bpf_hooks[i].slot, bpf_hooks[i].replacement);
 		if (ret) {
 			WRITE_ONCE(ds_ipc_active, false);
-			WRITE_ONCE(init_pid_ns.ns.ops, NULL);
+			set_init_ns_ops(false);
 			goto rollback;
 		}
 	}
@@ -442,7 +456,11 @@ int ds_hooks_prepare(void)
 	unsigned int i;
 	int ret;
 
-	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL) || init_pid_ns.ns.ops)
+	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL) || init_pid_ns.ns.ops
+#ifdef DS_USERNS_LIVE
+	    || init_user_ns.ns.ops
+#endif
+	   )
 		return -EOPNOTSUPP;
 	if (!ds_kprobe_hooks && samsung_el2()) {
 		pr_info("Samsung EL2 detected; using kprobe hooks without kernel memory writes\n");
@@ -543,7 +561,7 @@ static void ds_defex_install(void)
 static int kp_go_live(void *unused)
 {
 	/* Every probe is armed but passive; switch all of them at once. */
-	WRITE_ONCE(init_pid_ns.ns.ops, &pidns_operations);
+	set_init_ns_ops(true);
 	WRITE_ONCE(ds_ipc_active, true);
 	WRITE_ONCE(ds_kp_live, true);
 	return 0;
