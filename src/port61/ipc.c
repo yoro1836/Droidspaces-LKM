@@ -64,6 +64,29 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	if (err)
 		goto fail_put;
 
+#ifdef DS_USERNS_LIVE
+	/*
+	 * mq_init_ns() built this IPC namespace's internal mqueue super_block
+	 * through mq_create_mount(). On a kernel compiled without USER_NS the
+	 * native get_user_ns() is a no-op, so alloc_super() recorded
+	 * init_user_ns as its owner even though the namespace itself is owned
+	 * by a child user namespace. A later "mount -t mqueue" inside the
+	 * namespace builds an fs_context whose user_ns is that child (our
+	 * fs_context_for_mount owner fix-up), and sget_fc() then rejects the
+	 * shared super_block with -EBUSY because user_ns != old->s_user_ns.
+	 * Give the internal super_block the namespace's owner, as upstream
+	 * alloc_super() would, so the in-namespace mount shares it. The extra
+	 * reference is never dropped; with DS_USERNS_PIN the owner lives until
+	 * reboot. Objects owned by init_user_ns are left untouched.
+	 */
+	if (ns->mq_mnt && ns->mq_mnt->mnt_sb &&
+	    ns->user_ns != &init_user_ns &&
+	    ns->mq_mnt->mnt_sb->s_user_ns == &init_user_ns) {
+		ns->mq_mnt->mnt_sb->s_user_ns = get_user_ns(ns->user_ns);
+		ns->mq_mnt->mnt_sb->s_iflags |= SB_I_NODEV;
+	}
+#endif
+
 	err = -ENOMEM;
 	if (!setup_mq_sysctls(ns))
 		goto fail_put;
