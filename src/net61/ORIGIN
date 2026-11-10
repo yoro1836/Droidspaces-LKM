@@ -1,0 +1,12 @@
+Source: Samsung S5E9945 vendor kernel (android14-6.1, 6.1.138 source tree),
+copied without modification:
+- net/ipv6/netfilter/ip6table_nat.c  (CONFIG_IP6_NF_NAT is not set on the
+  device; the unified MASQUERADE target is built in)
+- drivers/net/macvlan.c              (CONFIG_MACVLAN is not set)
+
+Both import only exported KMI symbols and no core kernel code is
+conditional on these options. Droidspaces probes them for its "IPv6 NAT
+support" and "Macvlan support" checks.
+
+Build: scripts/build-samsung.py 6.1 --module ip6table_nat|macvlan ...
+Not yet validated on the device.
