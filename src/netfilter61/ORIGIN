@@ -39,4 +39,11 @@ Imports outside the KMI export list, resolved from kallsyms by ksud insmod:
 nf_nat_register_fn, nf_nat_unregister_fn, nf_nat_ipv4_{pre_routing,out,
 local_fn,local_in}, nf_nat_ipv6_{in,out,local_fn,fn}.
 Loading installs no rules or hooks. Refuses kernels other than
-6.1.*-android14-*. Not yet validated on the device.
+6.1.*-android14-*.
+
+Device (SM-S921N, 6.1.162-android14-11, sha256 34686f325bf08217...): loaded
+with `ksud insmod` without a reboot. In a Droidspaces container, nft 1.1.7
+creates an inet table with a nat postrouting chain (masquerade) and a
+filter input chain (fib daddr type local), lists and deletes it; an output
+chain's counter counts the packets of a ping (2 packets, 168 bytes) and
+connectivity is unaffected.
