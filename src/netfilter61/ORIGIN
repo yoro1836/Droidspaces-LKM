@@ -7,3 +7,7 @@ which Docker's and Podman's iptables bridge networking needs
 (-m addrtype --dst-type LOCAL). This builds the match as xt_addrtype.ko.
 
 Build: scripts/build-samsung.py 6.1 --module xt_addrtype ...
+
+Device (SM-S921N, 6.1.162-android14-11): loaded with `ksud insmod` without a
+reboot; in a Droidspaces container, iptables-legacy accepts and lists
+`-m addrtype --dst-type LOCAL` in the nat table.
