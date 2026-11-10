@@ -86,6 +86,9 @@ SYSTEM_UNITS=(
 	steamvr-v4l2loopback.service steamvr-web-debug-portforward.service
 	# SteamOS overlays /etc from /var at boot; see flatten_etc below
 	etc.mount
+	# Static mount units for the headset's partitions. home.mount is the one that
+	# hurts: any unit with a path under /home (WorkingDirectory=, ...) requires it.
+	home.mount efi.mount esp.mount
 	# Boot loader, partitions, OS update and device management
 	setubootenv.service steamos-boot.service steamos-post-update.service
 	steamos-finish-oobe-migration.service steamos-initrd-log-import.service
