@@ -36,6 +36,11 @@ before the container started. Nothing else of the phone becomes visible.
 ./droidspaces-prep.sh --undo [ROOT]
 ```
 
+SteamOS mounts an overlay on `/etc` at boot (`etc.mount`), and systemd reads
+its unit files before that mount exists. A mask written through the overlay is
+therefore not seen at the next boot. When the script finds the overlay it folds
+the overlay's contents into the real `/etc`, works there, and masks `etc.mount`.
+
 Restart the container afterwards. What was created is listed in
 `/etc/droidspaces-prep.manifest`.
 

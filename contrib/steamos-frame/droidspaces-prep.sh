@@ -32,6 +32,35 @@ ROOT="${ROOT%/}"
 grep -qs '^ID=steamos' "$ROOT/etc/os-release" || { echo "not SteamOS: ${ROOT:-/}" >&2; exit 1; }
 [[ -w "$ROOT/etc" ]] || { echo "need write access to ${ROOT:-/}/etc (run as root)" >&2; exit 1; }
 
+# SteamOS mounts an overlay on /etc (etc.mount: lower /etc, upper under
+# /var/lib/overlays). systemd reads its unit files before that mount exists,
+# so a mask written through the overlay lands in the upper layer and is not
+# seen at the next boot: the masked services start anyway. Work on the real
+# /etc underneath instead, fold the overlay's current contents into it, and
+# mask etc.mount so the container boots with one plain /etc from then on.
+LOWER=
+cleanup() { if [[ -n "$LOWER" ]]; then umount "$LOWER" 2>/dev/null || true; rmdir "$LOWER" 2>/dev/null || true; fi; }
+trap cleanup EXIT
+if [[ "$(findmnt -n -o FSTYPE -M "${ROOT:-/}${ROOT:+/}etc" 2>/dev/null)" == overlay ]]; then
+	merged="$ROOT/etc"
+	LOWER="$(mktemp -d)"
+	# A non-recursive bind shows the directory under the overlay mount.
+	mount --bind "${ROOT:-/}" "$LOWER"
+	[[ -d "$LOWER/etc/systemd" ]] || { echo "cannot reach the real /etc under the overlay" >&2; exit 1; }
+	if (( ! undo )); then
+		echo "/etc is an overlay: folding it into the real /etc."
+		cp -a -- "$merged/." "$LOWER/etc/"
+		# Entries deleted through the overlay must go from the real /etc too.
+		( cd "$LOWER/etc" && find . -mindepth 1 -depth -print0 ) | while IFS= read -r -d '' f; do
+			[[ -e "$merged/$f" || -L "$merged/$f" ]] || rm -rf -- "$LOWER/etc/$f"
+		done
+	fi
+	ROOT="$LOWER"
+	flattened=1
+else
+	flattened=0
+fi
+
 MANIFEST="$ROOT/etc/droidspaces-prep.manifest"
 
 # System units. Grouped by what they would touch on a real headset.
@@ -48,6 +77,8 @@ SYSTEM_UNITS=(
 	steam-video-codec-setup.service fancontrol.service set-bluetooth-mac-address.service
 	steamvr-program-ble.service steamvr-set-kernel-thread-priorities.service
 	steamvr-v4l2loopback.service steamvr-web-debug-portforward.service
+	# SteamOS overlays /etc from /var at boot; see flatten_etc below
+	etc.mount
 	# Boot loader, partitions, OS update and device management
 	setubootenv.service steamos-boot.service steamos-post-update.service
 	steamos-finish-oobe-migration.service steamos-initrd-log-import.service
@@ -212,7 +243,7 @@ if [[ ! -f "$ROOT/etc/fstab.steamos-orig" ]] && grep -qsE '^[^#[:space:]]' "$ROO
 fi
 
 echo "masked $masked new item(s); $kept were already masked by something else."
-echo "manifest: ${MANIFEST}"
-if [[ -z "$ROOT" ]]; then
+echo "manifest: /etc/droidspaces-prep.manifest"
+if [[ -z "$ROOT" || "$flattened" == 1 ]]; then
 	echo "Restart the container for this to take effect."
 fi
