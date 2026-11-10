@@ -9,4 +9,9 @@ conditional on these options. Droidspaces probes them for its "IPv6 NAT
 support" and "Macvlan support" checks.
 
 Build: scripts/build-samsung.py 6.1 --module ip6table_nat|macvlan ...
-Not yet validated on the device.
+macvlan is compiled with -DCONFIG_MACVLAN_MODULE=1: include/linux/if_macvlan.h
+replaces macvlan_dev_real_dev() with BUG() when the option is off, and a
+first build without the define hit it on the device (kernel BUG at
+if_macvlan.h:82 in macvlan_get_link_net, from rtnl_fill_link_netnsid, when
+`droidspaces check` probed macvlan). The rebuilt module contains no BUG
+site. Not yet validated on the device.
