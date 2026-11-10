@@ -92,7 +92,7 @@ if (( undo )); then
 		if [[ -e "$p.steamos-orig" || -L "$p.steamos-orig" ]]; then mv -f -- "$p.steamos-orig" "$p"; fi
 	done < "$MANIFEST"
 	if [[ -f "$ROOT/etc/fstab.steamos-orig" ]]; then mv -f "$ROOT/etc/fstab.steamos-orig" "$ROOT/etc/fstab"; fi
-	rmdir "$ROOT/etc/droidspaces" 2>/dev/null || true
+	rmdir "$ROOT/etc/droidspaces-prep" 2>/dev/null || true
 	rm -f "$MANIFEST"
 	echo "undone. Restart the container."
 	exit 0
@@ -127,7 +127,7 @@ install_file() { # install_file REL MODE  (content on stdin)
 	grep -qxF -- "F:$rel" "$MANIFEST" || printf 'F:%s\n' "$rel" >> "$MANIFEST"
 }
 
-install_file etc/droidspaces/devnode 0755 <<'DEVNODE'
+install_file etc/droidspaces-prep/devnode 0755 <<'DEVNODE'
 #!/bin/sh
 # Create or remove one input device node in the container's isolated /dev.
 # Called by 71-droidspaces-gamepad.rules; "scan" picks up controllers that
@@ -179,12 +179,12 @@ install_file etc/udev/rules.d/71-droidspaces-gamepad.rules 0644 <<'RULES'
 # The container's /dev is an isolated tmpfs, so no device node appears by
 # itself. Create one only for USB (bustype 0003) or Bluetooth (0005) game
 # controllers; the phone's touchscreen, sensors and keys never match.
-ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/bustype}=="0003|0005", ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_TOUCHSCREEN}!="1", ENV{ID_INPUT_ACCELEROMETER}!="1", RUN+="/etc/droidspaces/devnode add %k %M %m"
-ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*|js*", RUN+="/etc/droidspaces/devnode remove %k"
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/bustype}=="0003|0005", ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_TOUCHSCREEN}!="1", ENV{ID_INPUT_ACCELEROMETER}!="1", RUN+="/etc/droidspaces-prep/devnode add %k %M %m"
+ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*|js*", RUN+="/etc/droidspaces-prep/devnode remove %k"
 # Raw HID for controllers Steam Input drives itself (gyro, touchpad, rumble):
 # Valve 28DE, Sony 054C, Nintendo 057E.
-ACTION=="add", SUBSYSTEM=="hidraw", KERNELS=="*:28DE:*|*:054C:*|*:057E:*", RUN+="/etc/droidspaces/devnode add %k %M %m"
-ACTION=="remove", SUBSYSTEM=="hidraw", RUN+="/etc/droidspaces/devnode remove %k"
+ACTION=="add", SUBSYSTEM=="hidraw", KERNELS=="*:28DE:*|*:054C:*|*:057E:*", RUN+="/etc/droidspaces-prep/devnode add %k %M %m"
+ACTION=="remove", SUBSYSTEM=="hidraw", RUN+="/etc/droidspaces-prep/devnode remove %k"
 RULES
 
 install_file etc/systemd/system/droidspaces-gamepad-scan.service 0644 <<'UNIT'
@@ -194,7 +194,7 @@ After=systemd-udevd.service
 
 [Service]
 Type=oneshot
-ExecStart=/etc/droidspaces/devnode scan
+ExecStart=/etc/droidspaces-prep/devnode scan
 
 [Install]
 WantedBy=multi-user.target

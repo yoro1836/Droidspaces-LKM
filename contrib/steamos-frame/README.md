@@ -25,7 +25,7 @@ connections are handled by the rule, and
 `droidspaces-gamepad-scan.service` picks up controllers that were connected
 before the container started. Nothing else of the phone becomes visible.
 
-`/etc/droidspaces/devnode scan` runs the same scan by hand.
+`/etc/droidspaces-prep/devnode scan` runs the same scan by hand.
 
 ```sh
 # inside the container, as root
