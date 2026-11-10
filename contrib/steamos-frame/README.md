@@ -51,3 +51,43 @@ Checked against `steamframe-oobe-repair-20260922.5153644-0.3.0`: every unit and
 rule name in the script exists in that image, and apply, re-apply and `--undo`
 round-trip to an identical `/etc`. The controller rule has not been tried with
 a real controller yet.
+
+## Steam UI rendering under gamescope
+
+Notes from getting the Steam client UI (CEF, Chromium 126) GPU-rendered at the
+panel rate on a Galaxy S24 (Exynos 2400, RADV-Xclipse) with gamescope 3.16.28
+and the Anland backend. `cef-trace.py` is the tool that found each of these: it
+records a Chromium trace through the web helper's DevTools port (8080) and
+prints the GPU feature status, the `requestAnimationFrame` rate of each page
+and where every thread spends its frame.
+
+- Start Steam with `-cef-use-vulkan`. Passing only `--use-angle=vulkan` to the
+  web helper looks fine but is software rendering at about 20 fps: Chromium
+  wants an EGL config for the 32-bit visual it uses when a compositing manager
+  is present (gamescope is one), ANGLE's Vulkan backend only offers the root
+  visual, `eglCreateWindowSurface` fails with `EGL_BAD_CONFIG`, and Chromium
+  falls back to software compositing without saying so. `-cef-use-vulkan` also
+  enables the `Vulkan`, `DefaultANGLEVulkan` and `VulkanFromANGLE` features, so
+  the compositor presents through a Vulkan swapchain and never needs that
+  config.
+- Set `DISABLE_GAMESCOPE_WSI=1` for the web helper only (in
+  `steamwebhelper.sh`). The gamescope WSI layer lets the main view bypass
+  Xwayland, which replaces the whole toplevel with that one buffer; the Steam
+  menu, quick access and toasts are sibling child windows of the same toplevel
+  and disappear. The layer also answers a resize with
+  `VK_ERROR_OUT_OF_DATE_KHR` on present, which Chromium 126 treats as fatal:
+  the GPU process exits, and after three exits Chromium is back on software
+  rendering. Games are started by Steam, not by the web helper, and keep the
+  layer.
+- Give gamescope the panel rate (`-r 120`). The Anland backend starts before
+  the Android side connects and comes up at 60 Hz; the Xwayland output keeps
+  that mode, so Steam renders at 60 on a 120 Hz panel.
+
+```sh
+# with Steam running; switch to it and scroll while it records
+CEF_SECS=6 python3 cef-trace.py
+```
+
+Healthy output has `"gpu_compositing": "enabled"`, `"vulkan": "enabled_on"`, a
+`gap_med` near the frame time for the Big Picture page, and no
+`SoftwareRenderer` rows.
