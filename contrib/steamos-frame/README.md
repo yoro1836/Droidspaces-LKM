@@ -82,6 +82,9 @@ and where every thread spends its frame.
 - Give gamescope the panel rate (`-r 120`). The Anland backend starts before
   the Android side connects and comes up at 60 Hz; the Xwayland output keeps
   that mode, so Steam renders at 60 on a 120 Hz panel.
+- Give gamescope the panel size too (`-w 2340 -h 1080` on the S24). The default
+  1280x720 is letterboxed on a 19.5:9 panel and upscaled; Steam picks its own UI
+  scale for the size it is given.
 
 ```sh
 # with Steam running; switch to it and scroll while it records
