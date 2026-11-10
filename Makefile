@@ -57,6 +57,10 @@ ccflags-y += -I$(srctree)/fs/proc -I$(srctree)/fs -I$(srctree)
 else ifeq ($(TARGET),compat)
 obj-m := droidspaces_compat.o
 droidspaces_compat-y := src/compat/main.o
+else ifeq ($(TARGET),xt_addrtype)
+# android14-6.1 vendor xt_addrtype (src/netfilter61), missing from the Samsung config.
+obj-m := xt_addrtype.o
+xt_addrtype-y := src/netfilter61/xt_addrtype.o
 else ifeq ($(TARGET),netfilter)
 obj-m := droidspaces_netfilter.o
 droidspaces_netfilter-y := src/netfilter/main.o src/netfilter/nat-inet.o

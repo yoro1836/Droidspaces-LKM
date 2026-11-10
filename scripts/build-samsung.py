@@ -31,6 +31,7 @@ TARGETS = json.loads((ROOT / 'build/gki-targets.json').read_text())
 MODULES = {
     'devtmpfs': ('devtmpfs_source', 'TARGET=devtmpfs', 'DEVTMPFS_DIR', 'droidspaces_devtmpfs.ko'),
     'namespace': ('source', 'TARGET=namespace', 'PORT_DIR', 'droidspaces_ns.ko'),
+    'xt_addrtype': ('source', 'TARGET=xt_addrtype', 'PORT_DIR', 'xt_addrtype.ko'),
 }
 
 

@@ -1,0 +1,9 @@
+Source: Samsung S5E9945 vendor kernel (android14-6.1, 6.1.138 source tree),
+net/netfilter/xt_addrtype.c, copied without modification.
+
+The device kernel (SM-S921N, 6.1.162-android14-11) is built with
+CONFIG_NETFILTER_XTABLES=y but without CONFIG_NETFILTER_XT_MATCH_ADDRTYPE,
+which Docker's and Podman's iptables bridge networking needs
+(-m addrtype --dst-type LOCAL). This builds the match as xt_addrtype.ko.
+
+Build: scripts/build-samsung.py 6.1 --module xt_addrtype ...
