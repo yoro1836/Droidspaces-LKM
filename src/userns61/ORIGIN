@@ -103,7 +103,11 @@ Known gaps, to fix:
   and ACLs still use native identity; FUSE-BPF, fuseblk and passthrough
   are unchanged.
 
-Identity views (USERNS61_IDENT=1, experimental; not yet device-validated):
+Identity views (USERNS61_IDENT=1, experimental). Device (SM-S921N, build
+...8a54dcf898415d11, with USERNS61_FUSE): 9/9 probes, Android apps, /sdcard
+and logcat unaffected; in `unshare -r`, /proc/self/status shows Uid/Gid 0
+and NSpid, SO_PEERCRED and a sent-and-received SCM_CREDENTIALS read
+(pid, 0, 0); rootless Podman pings with its default ping_group_range "0 0".
 - live-sock.c: SO_PEERCRED / SO_PEERGROUPS through a filtered redirect of
   sk_getsockopt (vendor cases, cred_to_ucred, groups_to_user); kprobes on
   put_cmsg and __scm_send map SCM_CREDENTIALS for a receiver and a sender
