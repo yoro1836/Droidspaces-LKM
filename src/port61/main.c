@@ -21,6 +21,7 @@ static inline void ds_userns_undo(void) { }
 #endif
 
 extern void (*ds_proc_exit_connector)(struct task_struct *task);
+extern int (*ds_defex_zero_creds)(struct task_struct *task);
 
 static bool plc110_test;
 module_param(plc110_test, bool, 0400);
@@ -87,6 +88,9 @@ static int __init ds_port_init(void)
 		return -EOPNOTSUPP;
 	}
 	ds_proc_exit_connector = (void *)kallsyms_name_to_addr("proc_exit_connector");
+	ds_defex_zero_creds = (void *)kallsyms_name_to_addr("task_defex_zero_creds");
+	if (ds_defex_zero_creds)
+		pr_info("Samsung DEFEX: resetting per-task records at fork and exit\n");
 	if (!ds_proc_exit_connector &&
 	    !strcmp(utsname()->release, "6.6.127-4k-g46a034eca005-dirty"))
 		return -ENOENT;

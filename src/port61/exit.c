@@ -79,6 +79,18 @@
 /* The PLC110 kernel disables CONFIG_PROC_EVENTS; the DDK enables it. */
 void (*ds_proc_exit_connector)(struct task_struct *task);
 
+/*
+ * Samsung DEFEX keeps the credentials it last saw for every pid and compares
+ * them on later checks. The vendor do_exit() and kernel_clone() reset that
+ * record with task_defex_zero_creds(); the common-kernel sources this port is
+ * built from do not have the call. Without it a record outlives its task, a
+ * later task that reuses the pid inherits it, and DEFEX kills that task for a
+ * "credential violation" as soon as its ids differ (seen as zygote being
+ * killed while forking system_server once pids had wrapped). Resolved at
+ * init; NULL on kernels without DEFEX.
+ */
+int (*ds_defex_zero_creds)(struct task_struct *task);
+
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
 	nr_threads--;
@@ -769,6 +781,8 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
+	if (ds_defex_zero_creds)
+		ds_defex_zero_creds(current);
 	WARN_ON(irqs_disabled());
 
 	synchronize_group_exit(tsk, code);

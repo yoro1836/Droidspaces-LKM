@@ -106,6 +106,7 @@
 #include <linux/uaccess.h>
 #include <trace/events/sched.h>
 extern struct task_struct *copy_process(struct pid *, int, int, struct kernel_clone_args *);
+extern int (*ds_defex_zero_creds)(struct task_struct *task);
 static int wait_for_vfork_done(struct task_struct *child,
 				struct completion *vfork)
 {
@@ -203,6 +204,9 @@ pid_t ds_kernel_clone(struct kernel_clone_args *args)
 	pid = get_task_pid(p, PIDTYPE_PID);
 	nr = pid_vnr(pid);
 
+	/* As the vendor kernel_clone() does; see ds_defex_zero_creds. */
+	if (ds_defex_zero_creds)
+		ds_defex_zero_creds(p);
 	if (clone_flags & CLONE_PARENT_SETTID)
 		put_user(nr, args->parent_tid);
 
