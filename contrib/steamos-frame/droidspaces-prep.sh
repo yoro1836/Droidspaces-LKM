@@ -49,11 +49,18 @@ if [[ "$(findmnt -n -o FSTYPE -M "${ROOT:-/}${ROOT:+/}etc" 2>/dev/null)" == over
 	[[ -d "$LOWER/etc/systemd" ]] || { echo "cannot reach the real /etc under the overlay" >&2; exit 1; }
 	if (( ! undo )); then
 		echo "/etc is an overlay: folding it into the real /etc."
-		cp -a -- "$merged/." "$LOWER/etc/"
+		# Never copy from the overlay straight onto its own lower layer: for a
+		# file that only exists there, source and destination are one inode, and
+		# opening the destination truncates the source. Take a complete copy of
+		# the merged view first, then write that copy to the real /etc.
+		STAGE="$(mktemp -d)"
+		cp -a -- "$merged/." "$STAGE/"
+		cp -a -- "$STAGE/." "$LOWER/etc/"
 		# Entries deleted through the overlay must go from the real /etc too.
 		( cd "$LOWER/etc" && find . -mindepth 1 -depth -print0 ) | while IFS= read -r -d '' f; do
-			[[ -e "$merged/$f" || -L "$merged/$f" ]] || rm -rf -- "$LOWER/etc/$f"
+			[[ -e "$STAGE/$f" || -L "$STAGE/$f" ]] || rm -rf -- "$LOWER/etc/$f"
 		done
+		[[ -n "$STAGE" && -d "$STAGE" ]] && rm -rf -- "$STAGE"
 	fi
 	ROOT="$LOWER"
 	flattened=1
