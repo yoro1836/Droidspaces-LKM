@@ -126,3 +126,13 @@ and NSpid, SO_PEERCRED and a sent-and-received SCM_CREDENTIALS read
   ...d38f294e2b4a84b4): rootless Podman with its seccomp profile and no
   no_new_privs runs (NoNewPrivs 0, Seccomp 2); an unprivileged task in
   init_user_ns still gets EACCES; no visible slowdown.
+
+Full KernelSU package (SM-S921N, 6.1.162-android14-11, Droidspaces v7.2.0):
+Droidspaces-LKM-KernelSU-v0.2.0-samsung-e1s-full.zip (sha256 42a17e4d...),
+built with scripts/package-gki-device.py --ns (USERNS61 + USERNS61_FUSE +
+USERNS61_IDENT, build-id ...d38f294e2b4a84b4) --devtmpfs and --extra
+xt_addrtype, droidspaces_netfilter, ip6table_nat, macvlan. The loader
+reports the namespace module, devtmpfs and four extras loaded. `droidspaces
+check` passes every required and recommended item and every optional item
+except CPU limit (CONFIG_CFS_BANDWIDTH) and process limit
+(CONFIG_CGROUP_PIDS), which need the features compiled into the kernel.
