@@ -25,6 +25,10 @@ connections are handled by the rule, and
 `droidspaces-gamepad-scan.service` picks up controllers that were connected
 before the container started. Nothing else of the phone becomes visible.
 
+The same helper creates `/dev/ntsync` (`72-droidspaces-ntsync.rules`) when the
+host kernel has the ntsync driver, so Wine and Proton in the container can use
+it.
+
 `/etc/droidspaces-prep/devnode scan` runs the same scan by hand.
 
 ```sh

@@ -170,9 +170,9 @@ install_file() { # install_file REL MODE  (content on stdin)
 
 install_file etc/droidspaces-prep/devnode 0755 <<'DEVNODE'
 #!/bin/sh
-# Create or remove one input device node in the container's isolated /dev.
-# Called by 71-droidspaces-gamepad.rules; "scan" picks up controllers that
-# were already connected when the container started.
+# Create or remove one device node in the container's isolated /dev.
+# Called by 71-droidspaces-gamepad.rules and 72-droidspaces-ntsync.rules;
+# "scan" picks up what was already there when the container started.
 #
 # With Hardware Access on, /dev is the kernel devtmpfs: the nodes already exist
 # and must not be touched from here.
@@ -182,6 +182,7 @@ node_path() {
 	case "$1" in
 		event[0-9]*|js[0-9]*) echo "/dev/input/$1" ;;
 		hidraw[0-9]*) echo "/dev/$1" ;;
+		ntsync) echo "/dev/ntsync" ;;
 		*) return 1 ;;
 	esac
 }
@@ -190,6 +191,12 @@ case "$1" in
 	add)
 		p=$(node_path "$2") || exit 1
 		case "$3$4" in ''|*[!0-9]*) exit 1 ;; esac
+		if [ "$2" = ntsync ]; then
+			# World-accessible, as the kernel creates it: it only hands out
+			# synchronization objects private to the opener.
+			[ -e "$p" ] || mknod -m 0666 "$p" c "$3" "$4" || exit 1
+			exit 0
+		fi
 		mkdir -p /dev/input
 		[ -e "$p" ] || mknod -m 0660 "$p" c "$3" "$4" || exit 1
 		chgrp input "$p" 2>/dev/null
@@ -207,6 +214,10 @@ case "$1" in
 			IFS=: read -r maj min < "$d/dev"
 			"$0" add "${d##*/}" "$maj" "$min"
 		done
+		if [ -e /sys/class/misc/ntsync/dev ]; then
+			IFS=: read -r maj min < /sys/class/misc/ntsync/dev
+			"$0" add ntsync "$maj" "$min"
+		fi
 		;;
 	*)
 		echo "usage: $0 add NAME MAJOR MINOR | remove NAME | scan" >&2
@@ -228,9 +239,16 @@ ACTION=="add", SUBSYSTEM=="hidraw", KERNELS=="*:28DE:*|*:054C:*|*:057E:*", RUN+=
 ACTION=="remove", SUBSYSTEM=="hidraw", RUN+="/etc/droidspaces-prep/devnode remove %k"
 RULES
 
+install_file etc/udev/rules.d/72-droidspaces-ntsync.rules 0644 <<'RULES'
+# ntsync (Wine/Proton NT synchronization primitives), when the host kernel has
+# the driver. Same reason as above: nothing creates the node in a tmpfs /dev.
+ACTION=="add", SUBSYSTEM=="misc", KERNEL=="ntsync", RUN+="/etc/droidspaces-prep/devnode add %k %M %m"
+ACTION=="remove", SUBSYSTEM=="misc", KERNEL=="ntsync", RUN+="/etc/droidspaces-prep/devnode remove %k"
+RULES
+
 install_file etc/systemd/system/droidspaces-gamepad-scan.service 0644 <<'UNIT'
 [Unit]
-Description=Create nodes for game controllers connected before the container started
+Description=Create nodes for game controllers and ntsync present before the container started
 After=systemd-udevd.service
 
 [Service]
