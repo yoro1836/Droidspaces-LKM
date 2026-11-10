@@ -47,7 +47,7 @@ def unresolved_symbols(path):
     return sorted(set(nm.stdout.split()[1::2]))
 
 
-def package(family, label, output, devtmpfs=None, ns=None):
+def package(family, label, output, devtmpfs=None, ns=None, extras=()):
     target = TARGETS[family]
     kmi = target['kmi']
     out = ROOT / 'out/gki' / kmi
@@ -104,6 +104,23 @@ def package(family, label, output, devtmpfs=None, ns=None):
         files.update(dev_files)
         dev_note = (f'devtmpfs SHA-256: {sha(dev_data)} (vendor-header build, '
                     'scripts/build-samsung.py; symbols checked against kallsyms before load)\n')
+    extra_note = ''
+    if extras:
+        rows = ''
+        for path in extras:
+            data = Path(path).read_bytes()
+            PACKAGE['arm64'](data)
+            name = Path(path).name
+            if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]*\.ko', name) or f'kernel/{name}' in files:
+                raise ValueError(f'unusable extra module name: {name}')
+            files[f'kernel/{name}'] = data
+            symbols = unresolved_symbols(path)
+            if not symbols:
+                raise ValueError(f'{name} has no unresolved symbols; wrong file?')
+            files[f'kernel/{name}.syms'] = ''.join(f'{s}\n' for s in symbols).encode()
+            rows += f'{kmi}|{name}\n'
+            extra_note += f'Extra module {name} SHA-256: {sha(data)}\n'
+        files['kernel/extras.tsv'] = rows.encode()
     checksums = ''.join(f'{sha(data)}  {name.removeprefix("kernel/")}\n'
                         for name, data in sorted(files.items()) if name.startswith('kernel/'))
     checksums += f'{sha(helper)}  ../bin/abi-check\n'
@@ -118,6 +135,7 @@ def package(family, label, output, devtmpfs=None, ns=None):
         f'Payload SHA-256: {sha(payload)}'
         f'{" (vendor-header build, scripts/build-samsung.py)" if ns else ""}\n'
         f'{dev_note}'
+        f'{extra_note}'
         'Not VM-validated by this packager; validated on the device named in the label.\n'
         'The boot loader still checks the kernel BTF against the bundled ABI constraints.\n'
     ).encode()
@@ -145,7 +163,9 @@ if __name__ == '__main__':
                         help='vendor-header namespace module instead of the GKI build')
     parser.add_argument('--devtmpfs', type=Path,
                         help='optional devtmpfs module (e.g. from scripts/build-samsung.py)')
+    parser.add_argument('--extra', type=Path, action='append', default=[],
+                        help='extra module loaded after the namespace module, in the order given (repeatable)')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]*', args.label):
         parser.error('label must be lowercase letters, digits, dots and hyphens')
-    package(args.family, args.label, args.output, args.devtmpfs, args.ns)
+    package(args.family, args.label, args.output, args.devtmpfs, args.ns, args.extra)

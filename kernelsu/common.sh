@@ -5,6 +5,7 @@ DS_BTF=/sys/kernel/btf/vmlinux
 DS_KERNEL_NOTES=/sys/kernel/notes
 DS_MODULE_SYS=/sys/module/droidspaces_ns
 DS_DEV_SYS=/sys/module/droidspaces_devtmpfs
+DS_SYS_MODULES=/sys/module
 DS_KALLSYMS=/proc/kallsyms
 DS_PROC_NS=/proc/self/ns
 DS_KSUD=/data/adb/ksud
@@ -145,6 +146,54 @@ ds_devtmpfs_load() {
     DS_DEV_NOTE=' 与 devtmpfs'
 }
 
+# Optional extra modules: kernel/extras.tsv rows "kmi|module.ko", loaded in
+# file order after the namespace module (netfilter matches, nftables, ...).
+# A row's <module.ko>.syms, when shipped, must be satisfied by kallsyms first.
+# Sets DS_EXTRA_NOTE; a failure never undoes the namespace result.
+ds_extras_load() {
+    DS_EXTRA_NOTE=''
+    [ -r "$MODDIR/kernel/extras.tsv" ] || return 0
+    ds_extra_ok=0
+    ds_extra_bad=''
+    while IFS='|' read -r ds_extra_kmi ds_extra_ko ds_extra_rest; do
+        [ "$ds_extra_kmi" = "$DS_KMI" ] || continue
+        case "$ds_extra_ko" in ''|.*|*[!a-zA-Z0-9._-]*) ds_extra_bad="$ds_extra_bad ?"; continue;; esac
+        if [ -n "$ds_extra_rest" ] || [ ! -s "$MODDIR/kernel/$ds_extra_ko" ]; then
+            ds_extra_bad="$ds_extra_bad $ds_extra_ko"
+            continue
+        fi
+        ds_extra_name=$(printf '%s\n' "${ds_extra_ko%.ko}" | tr - _)
+        if [ -d "$DS_SYS_MODULES/$ds_extra_name" ]; then
+            ds_extra_ok=$((ds_extra_ok + 1))
+            continue
+        fi
+        if [ -s "$MODDIR/kernel/$ds_extra_ko.syms" ] &&
+            ! ds_symbols_present "$MODDIR/kernel/$ds_extra_ko.syms" "$ds_extra_name"; then
+            ds_extra_bad="$ds_extra_bad $ds_extra_name"
+            continue
+        fi
+        if "$DS_KSUD" insmod "$MODDIR/kernel/$ds_extra_ko" && [ -d "$DS_SYS_MODULES/$ds_extra_name" ]; then
+            ds_extra_ok=$((ds_extra_ok + 1))
+        else
+            ds_extra_bad="$ds_extra_bad $ds_extra_name"
+        fi
+    done < "$MODDIR/kernel/extras.tsv"
+    if [ -n "$ds_extra_bad" ]; then
+        DS_EXTRA_NOTE="；扩展模块未加载：${ds_extra_bad# }（详见 load.log）"
+        return 1
+    fi
+    [ "$ds_extra_ok" -eq 0 ] || DS_EXTRA_NOTE=" 及 ${ds_extra_ok} 个扩展模块"
+}
+
+# devtmpfs, then the extras. Both run even if the first fails.
+ds_optional_load() {
+    ds_optional_result=0
+    ds_devtmpfs_load || ds_optional_result=1
+    ds_extras_load || ds_optional_result=1
+    DS_DEV_NOTE="$DS_DEV_NOTE$DS_EXTRA_NOTE"
+    return "$ds_optional_result"
+}
+
 # KMI is a routing key; internal namespace hooks also require matching host ABI.
 ds_abi_compatible() {
     if [ -r "$DS_BTF" ]; then
@@ -168,7 +217,7 @@ ds_load() {
     fi
     if ds_active; then
         ds_ns_label
-        if ds_devtmpfs_load; then
+        if ds_optional_load; then
             ds_status "[已加载] ${DS_KMI}：${DS_NS_LABEL} namespace${DS_DEV_NOTE} 已激活（本次开机已加载）；更换 .ko 需重启。"
         else
             ds_status "[部分加载] ${DS_KMI}：${DS_NS_LABEL} namespace 已激活${DS_DEV_NOTE}。"
@@ -207,7 +256,7 @@ ds_load() {
         return 1
     fi
     ds_ns_label
-    if ! ds_devtmpfs_load; then
+    if ! ds_optional_load; then
         ds_status "[部分加载] ${DS_KMI}：${DS_NS_LABEL} namespace 已激活${DS_DEV_NOTE}。"
         return 0
     fi

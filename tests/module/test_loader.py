@@ -52,6 +52,11 @@ fi
 [ "$1" = insmod ] || exit 2
 printf '%s\\n' "$*" >> "$FAKE_ROOT/insmod-calls"
 case "$2" in
+    *extra_bad*) exit 5;;
+    *extra*)
+        ds_extra=${2##*/}; ds_extra=${ds_extra%.ko}
+        mkdir -p "$FAKE_ROOT/modules/$(printf '%s' "$ds_extra" | tr - _)"
+        exit 0;;
     *devtmpfs*)
         [ "$FAKE_DEV" != error ] || exit 19
         mkdir -p "$FAKE_ROOT/devsys/parameters"
@@ -97,6 +102,7 @@ DS_KERNEL_NOTES=$FAKE_ROOT/kernel.notes
 DS_MODULE_SYS=$FAKE_ROOT/sys
 DS_PROC_NS=$FAKE_ROOT/ns
 DS_DEV_SYS=$FAKE_ROOT/devsys
+DS_SYS_MODULES=$FAKE_ROOT/modules
 DS_KALLSYMS=$FAKE_ROOT/kallsyms
 uname() {
     case "$1" in
@@ -215,6 +221,62 @@ uname() {
         self.assertEqual(self.run_loader(config='fail', command="ds_status '[待加载] 本次开机尚未加载'").returncode, 0)
         self.assertIn('description=[待加载]', (self.module / 'module.prop').read_text())
         self.assertEqual((self.module / 'module.prop').read_text().count('description='), 1)
+
+    def add_extras(self, names, kmi='android16-6.12', symbols=None):
+        kernel = self.module / 'kernel'
+        rows = ''
+        for name in names:
+            (kernel / f'{name}.ko').write_bytes(b'fake extra module')
+            rows += f'{kmi}|{name}.ko\n'
+            added = [f'{name}.ko']
+            if symbols and name in symbols:
+                (kernel / f'{name}.ko.syms').write_text(''.join(f'{s}\n' for s in symbols[name]))
+                added.append(f'{name}.ko.syms')
+            with (kernel / 'SHA256SUMS').open('a') as sums:
+                for item in added:
+                    sums.write(f'{hashlib.sha256((kernel / item).read_bytes()).hexdigest()}  {item}\n')
+        (kernel / 'extras.tsv').write_text(rows)
+        with (kernel / 'SHA256SUMS').open('a') as sums:
+            sums.write(f'{hashlib.sha256(rows.encode()).hexdigest()}  extras.tsv\n')
+
+    def test_extras_load_in_order_after_namespace(self):
+        self.add_extras(['extra_a', 'extra-b'])
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.root / 'insmod-calls').read_text().splitlines()
+        self.assertEqual(len(calls), 3)
+        self.assertIn('extra_a.ko', calls[1])
+        self.assertIn('extra-b.ko', calls[2])
+        self.assertIn('[已加载]', self.status)
+        self.assertIn('及 2 个扩展模块', self.status)
+
+    def test_extra_failure_keeps_namespace_and_other_extras(self):
+        self.add_extras(['extra_bad', 'extra_a'])
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('[部分加载]', self.status)
+        self.assertIn('扩展模块未加载：extra_bad', self.status)
+        self.assertTrue((self.root / 'modules/extra_a').is_dir())
+
+    def test_extra_missing_symbol_skips_insmod(self):
+        self.add_extras(['extra_a'], symbols={'extra_a': ('kdp_usecount_inc', 'not_in_this_kernel')})
+        r = self.run_loader()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len((self.root / 'insmod-calls').read_text().splitlines()), 1)
+        self.assertIn('[部分加载]', self.status)
+
+    def test_extras_already_loaded_are_not_reloaded(self):
+        self.add_extras(['extra_a'])
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertEqual(len((self.root / 'insmod-calls').read_text().splitlines()), 2)
+        self.assertIn('及 1 个扩展模块 已激活（本次开机已加载）', self.status)
+
+    def test_extras_for_another_kmi_are_ignored(self):
+        self.add_extras(['extra_a'], kmi='android14-6.1')
+        self.assertEqual(self.run_loader().returncode, 0)
+        self.assertEqual(len((self.root / 'insmod-calls').read_text().splitlines()), 1)
+        self.assertNotIn('扩展模块', self.status)
 
     def test_without_devtmpfs_manifest_status_is_unchanged(self):
         self.assertEqual(self.run_loader().returncode, 0)
