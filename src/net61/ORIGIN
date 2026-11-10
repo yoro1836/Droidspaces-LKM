@@ -14,4 +14,8 @@ replaces macvlan_dev_real_dev() with BUG() when the option is off, and a
 first build without the define hit it on the device (kernel BUG at
 if_macvlan.h:82 in macvlan_get_link_net, from rtnl_fill_link_netnsid, when
 `droidspaces check` probed macvlan). The rebuilt module contains no BUG
-site. Not yet validated on the device.
+site.
+
+Device (SM-S921N, 6.1.162-android14-11; macvlan sha256 3a9a56c30b3d0d92...):
+with both modules loaded, `droidspaces check` (v7.2.0) reports Macvlan
+support and IPv6 NAT support as present and completes without a fault.
