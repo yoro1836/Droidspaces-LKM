@@ -292,6 +292,14 @@ int ds_userns_mount_register(void)
 			pr_warn("userns: FUSE passthrough guard unavailable (%d)\n", ret);
 	}
 #endif
+#ifdef DS_USERNS_IDENT
+	{
+		int ret = ds_sock_creds_register();
+
+		if (ret)
+			pr_warn("userns: SCM_CREDENTIALS mapping unavailable (%d)\n", ret);
+	}
+#endif
 	WRITE_ONCE(mount_live, true);
 	pr_info("userns: %u/%zu namespace and mount owner probes active\n",
 		ok, ARRAY_SIZE(mount_probes));

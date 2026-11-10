@@ -38,6 +38,12 @@ droidspaces_ns-y += src/userns61/user_namespace.o src/userns61/live-proc.o src/u
 	src/userns61/live-identity.o src/userns61/live-groups.o src/userns61/live-capabilities.o \
 	src/userns61/live-stat.o src/userns61/live-vfs.o src/userns61/live-mount.o src/userns61/live-credentials.o
 ccflags-y += -DCONFIG_USER_NS=1 -DDS_USERNS_LIVE=1 -DDS_USERNS_PIN=1
+ifeq ($(USERNS61_IDENT),1)
+# Experimental: socket peer ids, /proc/<pid>/status, nsfs ioctls and the ping
+# group range as seen from the caller's user namespace.
+droidspaces_ns-y += src/userns61/live-sock.o src/userns61/live-proc-status.o src/userns61/live-nsfs.o
+ccflags-y += -DDS_USERNS_IDENT=1
+endif
 ifeq ($(USERNS61_FUSE),1)
 # Experimental: FUSE mounts owned by child user namespaces (src/userns61/live-fuse.c).
 droidspaces_ns-y += src/userns61/live-fuse.o

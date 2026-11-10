@@ -75,7 +75,8 @@ Known gaps, to fix:
   CAP_SYS_ADMIN against the native current_user_ns() (init_user_ns), so a
   container root without no_new_privs gets EACCES. The 6.12 port
   (src/userns) has the same limitation (docs/docker-plz110-v0.1.4.md).
-- net.ipv4.ping_group_range: the native sysctl handler converts the range
+- (addressed by USERNS61_IDENT, see below) net.ipv4.ping_group_range: the
+  native sysctl handler converts the range
   with init_user_ns, so Podman's default "0 0" written from the container
   means host gid 0 and unprivileged ICMP sockets fail for container root
   (gid 1000 on the host). "0 2147483647" works. Needs the handler to map
@@ -101,3 +102,17 @@ Known gaps, to fix:
   expires. Forced requests
   and ACLs still use native identity; FUSE-BPF, fuseblk and passthrough
   are unchanged.
+
+Identity views (USERNS61_IDENT=1, experimental; not yet device-validated):
+- live-sock.c: SO_PEERCRED / SO_PEERGROUPS through a filtered redirect of
+  sk_getsockopt (vendor cases, cred_to_ucred, groups_to_user); kprobes on
+  put_cmsg and __scm_send map SCM_CREDENTIALS for a receiver and a sender
+  in a child namespace (scm_recv and scm_check_creds are inlined). Before
+  this, ids a child sent in SCM_CREDENTIALS were taken as host ids.
+- live-proc-status.c: vendor fs/proc/array.c proc_pid_status and its
+  static helpers; Uid/Gid/Groups follow the opener's namespace and the
+  NStgid/NSpid/NSpgid/NSsid lines appear (module CONFIG_PID_NS).
+- live-nsfs.c: vendor ns_ioctl (NS_GET_USERNS through the module's
+  ns_get_owner, NS_GET_OWNER_UID mapped) and ipv4_ping_group_range (range
+  read and written through the caller's namespace; fixes Podman's "0 0").
+Still open: seccomp filters without no_new_privs.

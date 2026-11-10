@@ -15,6 +15,7 @@
 #include <linux/sched/task.h>
 #include <linux/bpf.h>
 #include <linux/perf_event.h>
+#include <linux/sockptr.h>
 #include "fs/fuse/fuse_i.h"
 #include "core.h"
 #include "port.h"
@@ -246,6 +247,12 @@ static struct ds_hook hooks[] = {
 	HOOK("chown_common", ds_chown_common),
 	HOOK("do_faccessat", ds_do_faccessat),
 #endif
+#ifdef DS_USERNS_IDENT
+	/* Ids as seen from the caller's user namespace (live-proc-status.c, live-nsfs.c). */
+	HOOK("proc_pid_status", ds_proc_pid_status),
+	HOOK("ns_ioctl", ds_ns_ioctl),
+	HOOK("ipv4_ping_group_range", ds_ipv4_ping_group_range),
+#endif
 #ifdef DS_USERNS_FUSE
 	/* allow_other only within the connection's user namespace. */
 	HOOK("fuse_allow_current_process", ds_fuse_allow_current_process),
@@ -279,8 +286,10 @@ struct ds_kprobe {
 	bool syscall;
 	/* Nonzero: redirect only when the second argument has one of these bits. */
 	unsigned long arg1_mask;
+	/* Set: redirect only when it returns true for the entry registers. */
+	bool (*filter)(struct pt_regs *regs);
 };
-static struct ds_kprobe ds_kps[ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks) + 2 + ARRAY_SIZE(ipc_syscalls) + 1];
+static struct ds_kprobe ds_kps[ARRAY_SIZE(hooks) + ARRAY_SIZE(proc_hooks) + 2 + ARRAY_SIZE(ipc_syscalls) + 2];
 static unsigned int ds_kp_count;
 static bool ds_kp_live;
 
@@ -292,6 +301,8 @@ static int ds_kp_pre(struct kprobe *p, struct pt_regs *regs)
 	if (!READ_ONCE(ds_kp_live) || regs->regs[16] == DS_KP_MAGIC)
 		return 0;
 	if (k->arg1_mask && !(regs->regs[1] & k->arg1_mask))
+		return 0;
+	if (k->filter && !k->filter(regs))
 		return 0;
 	if (k->syscall) {
 		/* Native wrappers take the user pt_regs; unimplemented IPC
@@ -659,6 +670,22 @@ static int install_kprobes(void)
 		if (ret)
 			goto fail;
 		ds_kps[ds_kp_count - 1].arg1_mask = CLONE_NEWUSER;
+	}
+#endif
+#ifdef DS_USERNS_IDENT
+	/*
+	 * SO_PEERCRED and SO_PEERGROUPS for callers in a child user namespace
+	 * use the module's copy (live-sock.c); every other sk_getsockopt()
+	 * call runs the native function.
+	 */
+	{
+		extern int ds_sk_getsockopt(struct sock *, int, int, sockptr_t, sockptr_t);
+		unsigned long addr = kallsyms_name_to_addr("sk_getsockopt");
+
+		ret = addr ? ds_kp_add("sk_getsockopt", addr, (unsigned long)ds_sk_getsockopt, false) : -ENOENT;
+		if (ret)
+			goto fail;
+		ds_kps[ds_kp_count - 1].filter = ds_sk_getsockopt_filter;
 	}
 #endif
 	ret = stop_machine(kp_go_live, NULL, NULL);
