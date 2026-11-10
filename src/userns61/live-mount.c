@@ -298,6 +298,9 @@ int ds_userns_mount_register(void)
 
 		if (ret)
 			pr_warn("userns: SCM_CREDENTIALS mapping unavailable (%d)\n", ret);
+		ret = ds_seccomp_register();
+		if (ret)
+			pr_warn("userns: seccomp namespace capability check unavailable (%d)\n", ret);
 	}
 #endif
 	WRITE_ONCE(mount_live, true);

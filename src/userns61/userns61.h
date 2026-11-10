@@ -51,6 +51,7 @@ long ds_ns_ioctl(struct file *, unsigned int, unsigned long);
 int ds_ipv4_ping_group_range(struct ctl_table *, int, void *, size_t *, loff_t *);
 bool ds_sk_getsockopt_filter(struct pt_regs *);
 int ds_sock_creds_register(void);
+int ds_seccomp_register(void);
 struct fuse_conn;
 void ds_fuse_prepare(void);
 int ds_fuse_allow_current_process(struct fuse_conn *fc);

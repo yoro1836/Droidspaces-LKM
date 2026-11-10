@@ -119,4 +119,8 @@ and NSpid, SO_PEERCRED and a sent-and-received SCM_CREDENTIALS read
 - live-nsfs.c: vendor ns_ioctl (NS_GET_USERNS through the module's
   ns_get_owner, NS_GET_OWNER_UID mapped) and ipv4_ping_group_range (range
   read and written through the caller's namespace; fixes Podman's "0 0").
-Still open: seccomp filters without no_new_privs.
+- live-seccomp.c: seccomp filters without no_new_privs for CAP_SYS_ADMIN in
+  the caller's namespace. The check is inlined into do_seccomp; a kprobe on
+  ns_capable_noaudit swaps &init_user_ns for the caller's namespace only for
+  CAP_SYS_ADMIN calls returning into the seccomp functions. Not yet
+  device-validated.

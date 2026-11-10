@@ -41,7 +41,8 @@ ccflags-y += -DCONFIG_USER_NS=1 -DDS_USERNS_LIVE=1 -DDS_USERNS_PIN=1
 ifeq ($(USERNS61_IDENT),1)
 # Experimental: socket peer ids, /proc/<pid>/status, nsfs ioctls and the ping
 # group range as seen from the caller's user namespace.
-droidspaces_ns-y += src/userns61/live-sock.o src/userns61/live-proc-status.o src/userns61/live-nsfs.o
+droidspaces_ns-y += src/userns61/live-sock.o src/userns61/live-proc-status.o src/userns61/live-nsfs.o \
+	src/userns61/live-seccomp.o
 ccflags-y += -DDS_USERNS_IDENT=1
 endif
 ifeq ($(USERNS61_FUSE),1)
