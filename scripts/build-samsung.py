@@ -32,6 +32,7 @@ MODULES = {
     'devtmpfs': ('devtmpfs_source', 'TARGET=devtmpfs', 'DEVTMPFS_DIR', 'droidspaces_devtmpfs.ko'),
     'namespace': ('source', 'TARGET=namespace', 'PORT_DIR', 'droidspaces_ns.ko'),
     'xt_addrtype': ('source', 'TARGET=xt_addrtype', 'PORT_DIR', 'xt_addrtype.ko'),
+    'netfilter61': ('source', 'TARGET=netfilter61', 'PORT_DIR', 'droidspaces_netfilter.ko'),
 }
 
 
