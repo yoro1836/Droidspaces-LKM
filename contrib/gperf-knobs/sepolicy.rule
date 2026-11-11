@@ -1,0 +1,4 @@
+allow gperfd vendor_data_file dir { search getattr }
+allow gperfd vendor_data_file file { read open getattr }
+allow gflowd vendor_data_file dir { search getattr }
+allow gflowd vendor_data_file file { read open getattr }
