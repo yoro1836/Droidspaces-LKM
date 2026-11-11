@@ -1,0 +1,18 @@
+# Never enter the "light load" mode: it pushes CPU margins to their minimum
+# and drops every minimum-frequency request.
+elp_mode.cpu_activecycles_thr=0
+elp_mode.gpu_activecycles_thr=0
+# Do not let margins go negative; allow more headroom on the render clusters.
+margin[DOM_CL0].min=0
+margin[DOM_CL1L].min=0
+margin[DOM_CL1H].min=0
+margin[DOM_CL2].min=0
+margin[DOM_CL1L].max=300
+margin[DOM_CL1H].max=300
+margin[DOM_CL2].max=300
+margin[DOM_GPU].min=0
+margin[DOM_GPU].max=200
+# Keep the fps target longer before giving up on it (windows of 100 ms).
+fps.target_under_thr=150
+# Raise the memory-bus floor.
+mif.freq_lower_bound=1539000

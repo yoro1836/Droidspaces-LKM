@@ -1,0 +1,11 @@
+# No positive CPU margins, light-load mode entered more easily.
+margin[DOM_CL0].max=0
+margin[DOM_CL1L].max=0
+margin[DOM_CL1H].max=0
+margin[DOM_CL2].max=0
+margin[DOM_GPU].max=0
+elp_mode.cpu_activecycles_thr=1500000
+elp_mode.gpu_activecycles_thr=450000
+# The stock limit (55) is compared with mean temperature / 10 and so never
+# trips; 7 makes the built-in thermal safe mode start at about 70 C.
+safe_mode.temperature_limit=7

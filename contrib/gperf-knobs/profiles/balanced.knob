@@ -1,0 +1,7 @@
+# Stock policy, but the light-load mode may not cut margins below -200
+# and the fps target is held twice as long before it is lowered.
+margin[DOM_CL0].min=-200
+margin[DOM_CL1L].min=-200
+margin[DOM_CL1H].min=-200
+margin[DOM_CL2].min=-200
+fps.target_under_thr=100

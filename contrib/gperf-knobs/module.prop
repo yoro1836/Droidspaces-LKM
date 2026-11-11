@@ -1,0 +1,6 @@
+id=gperf-knobs
+name=Exynos gperf knobs
+version=v0.1
+versionCode=1
+author=Droidspaces-LKM
+description=Tuning profiles for Samsung's Exynos game governor daemon (gperf) through its knob.txt. S5E9945 only. Action button cycles the profile.
