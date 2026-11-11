@@ -1,0 +1,35 @@
+BBRv3 congestion control as a loadable module for android14-6.1 ("bbr3").
+
+Sources:
+- tcp_bbr3.c, bbr_compat.h: https://github.com/hrimfaxi/tcp_bbr_modules at
+  c5c5575, copied without modification. tcp_bbr3.c is net/ipv4/tcp_bbr.c from
+  Google's BBRv3 tree (https://github.com/google/bbr, branch v3) adapted to
+  kernels without the BBRv3 changes to the TCP stack. Compared with Google's
+  file the changes are: the per-connection state is allocated (it does not fit
+  icsk_ca_priv) and every entry point checks for it, Google-only fields are
+  read through bbr_compat.h, and the BPF kfunc registration is dropped.
+- kernel_config.h: written here, see its header comment.
+
+What a module cannot bring along (it needs the stack changes): per-skb loss
+attribution (skb_marked_lost), TLP recovery events, BBR's own TSO sizing,
+fast_ack_mode, PLB, and the extended `ss` info. rate_sample.tx_in_flight is
+approximated by prior_in_flight. The core algorithm (STARTUP, DRAIN, PROBE_BW,
+PROBE_RTT, loss-bounded inflight_hi) is unchanged.
+
+The algorithm registers as "bbr3" and does not replace anything; select it
+with net.ipv4.tcp_congestion_control or per socket. ECN handling is off unless
+the module is loaded with ecn_low=1.
+
+Build: scripts/build-samsung.py 6.1 --module tcp_bbr3 ...
+
+Test: tests/vm/run-bbr3.sh loads the module into the android14-6.1 GKI kernel
+in QEMU and drives it over loopback with tests/vm/bbr3.c, unshaped and through
+netem (20 ms each way, with and without loss, and with ecn_low=1). It checks
+that the socket really runs bbr3, that a bandwidth estimate and a min_rtt
+matching the path appear, that the pacing gain leaves STARTUP on a shaped
+path, that loss is retransmitted without stalling, and that the module unloads
+after 200 short connections.
+
+All imported symbols are exported with a KMI CRC (tcp_register_congestion_control,
+__tcp_send_ack, kmalloc/kfree, get_random_*), so the module loads with plain
+insmod. Not loaded on a device yet.

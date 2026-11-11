@@ -1,0 +1,24 @@
+#!/bin/sh
+# Init of the bbr3 test VM: load the module, run tests/vm/bbr3.c, unload.
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+ip link set lo up
+result=0
+insmod /tcp_bbr3.ko || { echo DS_BBR3_LOAD_FAIL; poweroff -f; }
+grep -qw bbr3 /proc/sys/net/ipv4/tcp_available_congestion_control || { echo DS_BBR3_NOT_REGISTERED; result=1; }
+echo "available: $(cat /proc/sys/net/ipv4/tcp_available_congestion_control)"
+/bbr3 plain 6 || result=1
+/bbr3 delay 8 20 0 || result=1
+/bbr3 lossy 10 20 10 || result=1
+# Many short connections: the per-connection state is allocated and freed.
+i=0; while [ $i -lt 200 ]; do /bbr3 short$i 0.2 >/dev/null 2>&1; i=$((i + 1)); done
+sleep 2
+rmmod tcp_bbr3 && echo DS_BBR3_UNLOAD_PASS || { echo DS_BBR3_UNLOAD_FAIL; result=1; }
+# ECN variant: with ecn_low=1 the connection negotiates ECN.
+insmod /tcp_bbr3.ko ecn_low=1 || { echo DS_BBR3_ECN_LOAD_FAIL; result=1; }
+/bbr3 ecn 10 20 5 || result=1
+sleep 2
+rmmod tcp_bbr3 && echo DS_BBR3_ECN_UNLOAD_PASS || { echo DS_BBR3_ECN_UNLOAD_FAIL; result=1; }
+echo "DS_BBR3_VM_RESULT=$result"
+poweroff -f
