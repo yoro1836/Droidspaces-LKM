@@ -9,8 +9,7 @@ for p in $PROFILES; do
 	[ "$p" = "$cur" ] && take=1
 done
 [ -n "$next" ] || next=stock
-echo "$next" > "$STATE"
-if apply_profile "$next"; then
+if set_profile "$next"; then
 	echo "gperf profile: $cur -> $next"
 	echo "Applies the next time a game starts."
 else

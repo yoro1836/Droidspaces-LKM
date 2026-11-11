@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>gperf knobs</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #16181d; --muted: #667085;
+  --line: #e2e5ea; --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d; --off: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --card: #191c22; --text: #e8eaee; --muted: #98a2b3;
+    --line: #2a2f38; --accent: #5b8def; --accent-text: #0f1115; --ok: #4ade80; --off: #f97066;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  padding-top: calc(16px + env(safe-area-inset-top));
+  background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Noto Sans KR", sans-serif;
+}
+h1 { font-size: 20px; margin: 0 0 12px; }
+h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+.stat b { display: block; font-size: 12px; color: var(--muted); font-weight: 500; }
+.stat span { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.on { color: var(--ok); } .offc { color: var(--off); }
+.profiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+button {
+  font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; text-align: left; min-height: 44px;
+}
+button.sel { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button small { display: block; font-size: 12px; opacity: .8; }
+button.plain { text-align: center; min-height: 36px; padding: 6px 12px; }
+input[type=search] {
+  width: 100%; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+}
+.apps { max-height: 46vh; overflow-y: auto; border-top: 1px solid var(--line); }
+label.app { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); min-height: 44px; }
+label.app span { overflow-wrap: anywhere; min-width: 0; }
+label.app input { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+pre {
+  margin: 0; max-height: 50vh; overflow: auto; font: 12px/1.45 ui-monospace, "Roboto Mono", monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border-radius: 10px; padding: 10px;
+}
+.row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.row h2 { margin: 0; flex: 1; }
+.note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+#err { color: var(--off); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>gperf knobs</h1>
+<div id="err"></div>
+
+<section>
+  <h2>상태</h2>
+  <div class="grid">
+    <div class="stat"><b>스케줄러 모드</b><span id="s-mode">-</span></div>
+    <div class="stat"><b>프레임 거버너</b><span id="s-gov">-</span></div>
+    <div class="stat"><b>감시 서비스</b><span id="s-svc">-</span></div>
+    <div class="stat"><b>설정 파일 마지막 읽힘</b><span id="s-knob">-</span></div>
+  </div>
+  <p class="note" id="s-sample"></p>
+</section>
+
+<section>
+  <h2>프로필</h2>
+  <div class="profiles" id="profiles"></div>
+  <p class="note">다음에 게임을 켤 때 적용됩니다.</p>
+</section>
+
+<section>
+  <h2>게임 모드로 넣을 앱</h2>
+  <input type="search" id="q" placeholder="패키지명 검색">
+  <div class="apps" id="apps"></div>
+  <p class="note">체크한 앱이 화면에 떠 있는 동안 게임 모드로 들어갑니다.</p>
+</section>
+
+<section>
+  <div class="row">
+    <h2>로그</h2>
+    <button class="plain" id="reload">새로고침</button>
+    <button class="plain" id="clear">지우기</button>
+  </div>
+  <pre id="log">-</pre>
+</section>
+
+<script>
+const GK = 'sh /data/adb/modules/gperf-knobs/gk.sh';
+const PROFILES = [
+  ['stock', '기본', '삼성 기본값'],
+  ['balanced', '균형', '절전 폭 제한, 목표 fps 유지'],
+  ['performance', '성능', '절전 모드 끔, 마진 상향'],
+  ['cool', '저발열', '마진 제한, 70도 안전 모드'],
+];
+const MODES = { 0: '일반', 1: '절전 시나리오', 2: '성능', 3: '게임', 4: '균형', 5: '카메라' };
+let seq = 0;
+
+function exec(cmd) {
+  return new Promise((resolve) => {
+    if (!window.ksu || !window.ksu.exec) { resolve({ errno: 127, stdout: '', stderr: 'KernelSU WebUI 안에서만 동작합니다.' }); return; }
+    const cb = 'gk_cb_' + (++seq);
+    window[cb] = (errno, stdout, stderr) => { delete window[cb]; resolve({ errno, stdout, stderr }); };
+    window.ksu.exec(cmd, '{}', cb);
+  });
+}
+const quote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const $ = (id) => document.getElementById(id);
+function fail(r) { $('err').textContent = r.errno ? (r.stderr || ('명령 실패 (' + r.errno + ')')) : ''; return r.errno; }
+
+function renderProfiles(cur) {
+  const box = $('profiles');
+  box.textContent = '';
+  for (const [id, name, desc] of PROFILES) {
+    const b = document.createElement('button');
+    if (id === cur) b.className = 'sel';
+    b.textContent = name;
+    const s = document.createElement('small');
+    s.textContent = desc;
+    b.appendChild(s);
+    b.onclick = async () => { if (!fail(await exec(GK + ' profile ' + id))) { await status(); await showLog(); } };
+    box.appendChild(b);
+  }
+}
+
+async function status() {
+  const r = await exec(GK + ' status');
+  if (fail(r)) { renderProfiles(''); return; }
+  const kv = {};
+  for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1); }
+  $('s-mode').textContent = kv.mode === undefined || kv.mode === '' ? '-' : (MODES[kv.mode] || kv.mode) + ' (' + kv.mode + ')';
+  const onoff = (el, v) => { el.textContent = v === '1' ? '켜짐' : '꺼짐'; el.className = v === '1' ? 'on' : 'offc'; };
+  onoff($('s-gov'), kv.governor);
+  onoff($('s-svc'), kv.service);
+  $('s-knob').textContent = kv.knob || '파일 없음';
+  $('s-sample').textContent = kv.sample ? '최근 샘플: ' + kv.sample : '';
+  renderProfiles(kv.profile);
+}
+
+let apps = [];
+function renderApps() {
+  const q = $('q').value.trim().toLowerCase();
+  const box = $('apps');
+  box.textContent = '';
+  for (const a of apps) {
+    if (q && !a.pkg.toLowerCase().includes(q)) continue;
+    const l = document.createElement('label');
+    l.className = 'app';
+    const c = document.createElement('input');
+    c.type = 'checkbox';
+    c.checked = a.on;
+    c.onchange = async () => {
+      if (fail(await exec(GK + ' toggle ' + quote(a.pkg)))) { c.checked = a.on; return; }
+      a.on = c.checked;
+      showLog();
+    };
+    const s = document.createElement('span');
+    s.textContent = a.pkg;
+    l.append(c, s);
+    box.appendChild(l);
+  }
+  if (!box.children.length) box.textContent = apps.length ? '일치하는 앱이 없습니다.' : '앱 목록을 읽지 못했습니다.';
+}
+async function loadApps() {
+  const r = await exec(GK + ' games');
+  if (fail(r)) return;
+  apps = r.stdout.split('\n').filter(Boolean).map((l) => ({ on: l[0] === '1', pkg: l.slice(2) }));
+  renderApps();
+}
+
+async function showLog() {
+  const r = await exec(GK + ' log 300');
+  const el = $('log');
+  el.textContent = r.stdout.trim() || '기록이 없습니다.';
+  el.scrollTop = el.scrollHeight;
+}
+
+$('q').oninput = renderApps;
+$('reload').onclick = () => { status(); showLog(); };
+$('clear').onclick = async () => { await exec(GK + ' clearlog'); showLog(); };
+(async () => { await status(); await loadApps(); await showLog(); })();
+setInterval(() => { if (!document.hidden) status(); }, 5000);
+</script>
+</body>
+</html>

@@ -5,7 +5,18 @@ KNOB_DIR=${KNOB_DIR:-/data/vendor/exynos-profiler}
 KNOB_FILE=$KNOB_DIR/knob.txt
 STATE=${STATE:-/data/adb/gperf-knobs.profile}
 GAMES=${GAMES:-/data/adb/gperf-knobs.games}
+LOG=${LOG:-/data/adb/gperf-knobs.log}
+LOG_MAX=262144
 PROFILES="stock performance balanced cool"
+MODE=/sys/devices/platform/ems/emstune/req_mode
+PROF=/sys/devices/platform/exynos-profiler
+
+log() {
+	if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt $LOG_MAX ]; then
+		tail -n 400 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+	fi
+	echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"
+}
 
 current_profile() {
 	p=$(cat "$STATE" 2>/dev/null)
@@ -29,4 +40,20 @@ apply_profile() {
 	chmod 644 "$KNOB_FILE"
 	chcon --reference=/data/vendor "$KNOB_DIR" "$KNOB_FILE" 2>/dev/null
 	return 0
+}
+
+set_profile() {
+	[ -f "$MODDIR/profiles/$1.knob" ] || return 1
+	echo "$1" > "$STATE"
+	apply_profile "$1" && log "profile $1"
+}
+
+# One line from the kernel profiler: displayed fps, per-domain frequency (kHz)
+# and temperature of CL0 CL1L CL1H CL2 GPU MIF.
+sample() {
+	awk -F= '
+		$1=="profile_time_ms"{t=$2} $1=="profile_frame_cnt"{f=$2}
+		$1=="freq"{fr=$2} $1=="temp"{te=$2}
+		END{ if (t>0) printf "fps=%d freq=%s temp=%s", f*1000/t, fr, te }
+	' "$PROF/control/control_profile" 2>/dev/null
 }
