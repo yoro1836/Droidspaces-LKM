@@ -4,6 +4,7 @@ MODDIR=${MODDIR:-${0%/*}}
 KNOB_DIR=${KNOB_DIR:-/data/vendor/exynos-profiler}
 KNOB_FILE=$KNOB_DIR/knob.txt
 STATE=${STATE:-/data/adb/gperf-knobs.profile}
+GAMES=${GAMES:-/data/adb/gperf-knobs.games}
 PROFILES="stock performance balanced cool"
 
 current_profile() {

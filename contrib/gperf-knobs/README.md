@@ -20,3 +20,10 @@ are installed). Unknown names are ignored by the daemon.
 Status: the file format and the meaning of each knob come from static analysis.
 Whether the daemon's SELinux domain may read the file, and what each profile
 does to frame rate and temperature, has not been measured on a device.
+
+## Forcing game mode
+
+The vendor governor only runs while the scheduler is in game mode, which the
+system enters for apps it recognises as games. `service.sh` enters it for any
+app listed (one package name per line) in `/data/adb/gperf-knobs.games` while
+that app has focus, and leaves it afterwards. The list is re-read every 3 s.
