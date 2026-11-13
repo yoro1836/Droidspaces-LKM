@@ -233,6 +233,10 @@ static struct ds_hook hooks[] = {
 	HOOK("cap_task_fix_setuid", ds_cap_task_fix_setuid),
 	HOOK("cap_bprm_creds_from_file", ds_cap_bprm_creds_from_file),
 	HOOK("cap_task_prctl", ds_cap_task_prctl),
+	/* File capabilities belong to the root of the namespace that set them. */
+	HOOK("cap_inode_getsecurity", ds_cap_inode_getsecurity),
+	HOOK("cap_convert_nscap", ds_cap_convert_nscap),
+	HOOK("get_vfs_caps_from_disk", ds_get_vfs_caps_from_disk),
 	/* Owners as seen from the caller's namespace (below KernelSU's newfstatat probe). */
 	HOOK("cp_new_stat", ds_cp_new_stat),
 	HOOK("cp_statx", ds_cp_statx),
