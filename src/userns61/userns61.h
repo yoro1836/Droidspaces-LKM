@@ -33,7 +33,6 @@ struct dentry; struct cpu_vfs_cap_data;
 int ds_cap_inode_getsecurity(struct user_namespace *mnt_userns, struct inode *inode, const char *name, void **buffer, bool alloc);
 int ds_cap_convert_nscap(struct user_namespace *mnt_userns, struct dentry *dentry, const void **ivalue, size_t size);
 struct xattr_ctx; struct file;
-int ds_do_setxattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct xattr_ctx *ctx);
 ssize_t ds_do_getxattr(struct user_namespace *mnt_userns, struct dentry *d, struct xattr_ctx *ctx);
 ssize_t ds_proc_loginuid_read(struct file *file, char __user *buf, size_t count, loff_t *ppos);
 ssize_t ds_proc_loginuid_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);

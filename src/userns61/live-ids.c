@@ -3,7 +3,7 @@
  * Two more places where ids cross the user boundary untranslated on a kernel
  * built without USER_NS: POSIX ACL xattrs and /proc/<pid>/loginuid.
  *
- * do_setxattr(), do_getxattr() (fs/xattr.c), proc_loginuid_read() and
+ * do_getxattr() (fs/xattr.c), proc_loginuid_read() and
  * proc_loginuid_write() (fs/proc/base.c) are carried over from
  * android14-6.1 unchanged. The ACL fix-ups they call compile to nothing in
  * that kernel (include/linux/posix_acl_xattr.h), so those come along from
@@ -13,6 +13,7 @@
 #include <linux/audit.h>
 #include <linux/cred.h>
 #include <linux/fs.h>
+#include <linux/kprobes.h>
 #include <linux/mm.h>
 #include <linux/pid.h>
 #include <linux/posix_acl_xattr.h>
@@ -81,14 +82,32 @@ static void acl_xattr_between(struct user_namespace *to, struct user_namespace *
 	}
 }
 
-int ds_do_setxattr(struct user_namespace *mnt_userns, struct dentry *dentry,
-		   struct xattr_ctx *ctx)
+/*
+ * Writes are caught at vfs_setxattr(), not at do_setxattr() as upstream
+ * does: the compiler folds do_setxattr() into the setxattr syscalls, and a
+ * patched copy of it is never reached. Every other caller that passes an
+ * ACL is a kernel thread (nfsd, ksmbd) or runs on the filesystem mounter's
+ * credentials (overlayfs), so the namespace test leaves those alone. The
+ * syscall's value is its own kvmalloc() copy and may be edited in place.
+ */
+static int vfs_setxattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	if (ctx->size && is_posix_acl_xattr(ctx->kname->name))
-		acl_xattr_between(&init_user_ns, current_user_ns(), ctx->kvalue, ctx->size);
-	return vfs_setxattr(mnt_userns, dentry, ctx->kname->name,
-			ctx->kvalue, ctx->size, ctx->flags);
+	const char *name = (const char *)regs->regs[2];
+	void *value = (void *)regs->regs[3];
+	size_t size = regs->regs[4];
+	struct user_namespace *ns = current_user_ns();
+
+	if (ns != &init_user_ns && !(current->flags & PF_KTHREAD) &&
+	    value && size && is_posix_acl_xattr(name))
+		acl_xattr_between(&init_user_ns, ns, value, size);
+	return 1;	/* nothing to do on return */
 }
+
+struct kretprobe ds_acl_setxattr_probe = {
+	.kp.symbol_name = "vfs_setxattr",
+	.entry_handler = vfs_setxattr_entry,
+	.maxactive = 32,
+};
 
 ssize_t ds_do_getxattr(struct user_namespace *mnt_userns, struct dentry *d,
 		       struct xattr_ctx *ctx)

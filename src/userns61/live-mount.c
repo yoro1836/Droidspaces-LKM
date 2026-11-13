@@ -413,7 +413,10 @@ extern struct kretprobe ds_fuse_do_getattr_probe;
 int ds_fuse_register_init_guard(void);
 #endif
 
+extern struct kretprobe ds_acl_setxattr_probe;
+
 static struct kretprobe *const mount_probes[] = {
+	&ds_acl_setxattr_probe,
 	&vfs_get_tree_probe,
 	&reconfigure_super_probe,
 	&mm_alloc_probe,
