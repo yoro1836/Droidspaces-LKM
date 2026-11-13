@@ -161,6 +161,41 @@ static struct kretprobe fs_context_reconfigure_probe = {
 	.maxactive = 32,
 };
 
+/*
+ * tmpfs "uid=" and "gid=": mm/shmem.c converts them with make_kuid() and
+ * make_kgid(), which are identity in this build, so a mount made in a child
+ * user namespace ends up owned by the host id of that number, an id nobody
+ * in the namespace can touch. logind mounts every /run/user/<uid> this way.
+ *
+ * The parsed options sit in a struct private to mm/shmem.c; this is its
+ * layout in android14-6.1, the Samsung S5E9945 tree and mainline 6.1. Without
+ * the option the field holds the mounter's fsuid, which already maps into the
+ * namespace, so only ids with no mapping are taken to be namespace ids.
+ */
+struct ds_shmem_options {
+	unsigned long long blocks;
+	unsigned long long inodes;
+	struct mempolicy *mpol;
+	kuid_t uid;
+	kgid_t gid;
+};
+
+static void tmpfs_owner_to_ns(struct fs_context *fc, struct user_namespace *ns)
+{
+	struct ds_shmem_options *opts = fc->fs_private;
+	kuid_t uid;
+	kgid_t gid;
+
+	if (!opts || strcmp(fc->fs_type->name, "tmpfs"))
+		return;
+	uid = make_kuid(ns, __kuid_val(opts->uid));
+	if (from_kuid(ns, opts->uid) == (uid_t)-1 && uid_valid(uid))
+		opts->uid = uid;
+	gid = make_kgid(ns, __kgid_val(opts->gid));
+	if (from_kgid(ns, opts->gid) == (gid_t)-1 && gid_valid(gid))
+		opts->gid = gid;
+}
+
 /* sget_fc(fc, test, set): a new super_block takes the context's owner. */
 static int sget_fc_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
@@ -196,6 +231,9 @@ static int sget_fc_return(struct kretprobe_instance *ri, struct pt_regs *regs)
 		s->s_user_ns = get_user_ns(ns);
 		s->s_iflags |= SB_I_NODEV;
 	}
+	/* Before the caller's fill_super() reads them into the root inode. */
+	if (ns && !s->s_root)
+		tmpfs_owner_to_ns(fc, ns);
 	return 0;
 }
 
