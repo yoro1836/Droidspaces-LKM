@@ -192,6 +192,11 @@ pid_t ds_kernel_clone(struct kernel_clone_args *args)
 	}
 	if (state)
 		ds_ipc_task_install(state, p);
+#ifdef DS_USERNS_LIVE
+	/* dup_mm() reset the copy's owner to init_user_ns, see mm_alloc_probe. */
+	if (!(clone_flags & CLONE_VM) && p->mm && current->mm)
+		p->mm->user_ns = current->mm->user_ns;
+#endif
 
 	cpufreq_task_times_alloc(p);
 

@@ -35,6 +35,8 @@
  */
 #include <linux/fs.h>
 #include <linux/fs_context.h>
+#include <linux/idr.h>
+#include <linux/mm_types.h>
 #include <linux/kprobes.h>
 #include <linux/proc_ns.h>
 #include <linux/sched.h>
@@ -180,21 +182,135 @@ struct ds_shmem_options {
 	kgid_t gid;
 };
 
+/* An id the namespace has no name for was typed as a namespace id. */
+static void option_ids_to_ns(struct user_namespace *ns, kuid_t *uid, kgid_t *gid)
+{
+	kuid_t kuid = make_kuid(ns, __kuid_val(*uid));
+	kgid_t kgid = make_kgid(ns, __kgid_val(*gid));
+
+	if (from_kuid(ns, *uid) == (uid_t)-1 && uid_valid(kuid))
+		*uid = kuid;
+	if (from_kgid(ns, *gid) == (gid_t)-1 && gid_valid(kgid))
+		*gid = kgid;
+}
+
 static void tmpfs_owner_to_ns(struct fs_context *fc, struct user_namespace *ns)
 {
 	struct ds_shmem_options *opts = fc->fs_private;
-	kuid_t uid;
-	kgid_t gid;
 
-	if (!opts || strcmp(fc->fs_type->name, "tmpfs"))
-		return;
-	uid = make_kuid(ns, __kuid_val(opts->uid));
-	if (from_kuid(ns, opts->uid) == (uid_t)-1 && uid_valid(uid))
-		opts->uid = uid;
-	gid = make_kgid(ns, __kgid_val(opts->gid));
-	if (from_kgid(ns, opts->gid) == (gid_t)-1 && gid_valid(gid))
-		opts->gid = gid;
+	if (opts && !strcmp(fc->fs_type->name, "tmpfs"))
+		option_ids_to_ns(ns, &opts->uid, &opts->gid);
 }
+
+/*
+ * devpts has the same "uid=" and "gid=" problem (crun mounts it with gid=5
+ * for every container), but it is a legacy filesystem: mount_nodev() calls
+ * sget() and parses the options in its fill_super, out of reach of the
+ * sget_fc probe. Fix the result up when vfs_get_tree() and
+ * reconfigure_super() return; a remount parses the options again.
+ *
+ * The super_block also takes the namespace as owner here, which is what
+ * lets root in the namespace remount it at all. Not SB_I_NODEV: ptys are
+ * device nodes and devpts_fill_super() clears the flag natively too.
+ *
+ * Mirrors of the structs private to fs/devpts/inode.c; the back pointer is
+ * checked before anything is written.
+ */
+struct ds_pts_fs_info {
+	struct ida allocated_ptys;
+	struct {
+		int setuid;
+		int setgid;
+		kuid_t uid;
+		kgid_t gid;
+	} mount_opts;
+	umode_t mode, ptmxmode;
+	int reserve, max;
+	struct super_block *sb;
+	struct dentry *ptmx_dentry;
+};
+
+static void devpts_owner_to_ns(struct super_block *sb, struct user_namespace *ns)
+{
+	struct ds_pts_fs_info *fsi = sb->s_fs_info;
+	struct inode *ptmx;
+
+	if (!fsi || fsi->sb != sb)
+		return;
+	if (sb->s_user_ns == &init_user_ns)
+		sb->s_user_ns = get_user_ns(ns);
+	option_ids_to_ns(ns, &fsi->mount_opts.uid, &fsi->mount_opts.gid);
+	ptmx = fsi->ptmx_dentry ? d_inode(fsi->ptmx_dentry) : NULL;
+	if (ptmx) {
+		if (fsi->mount_opts.setuid)
+			ptmx->i_uid = fsi->mount_opts.uid;
+		if (fsi->mount_opts.setgid)
+			ptmx->i_gid = fsi->mount_opts.gid;
+	}
+}
+
+static int fc_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	*(struct fs_context **)ri->data = (struct fs_context *)regs->regs[0];
+	return 0;
+}
+
+static int devpts_tree_return(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct fs_context *fc = *(struct fs_context **)ri->data;
+	struct user_namespace *ns;
+
+	if (!READ_ONCE(mount_live) || regs_return_value(regs) || !fc->root ||
+	    strcmp(fc->fs_type->name, "devpts"))
+		return 0;
+	ns = child_userns(fc->user_ns);
+	if (ns)
+		devpts_owner_to_ns(fc->root->d_sb, ns);
+	return 0;
+}
+
+static struct kretprobe vfs_get_tree_probe = {
+	.kp.symbol_name = "vfs_get_tree",
+	.entry_handler = fc_entry,
+	.handler = devpts_tree_return,
+	.data_size = sizeof(struct fs_context *),
+	.maxactive = 32,
+};
+
+static struct kretprobe reconfigure_super_probe = {
+	.kp.symbol_name = "reconfigure_super",
+	.entry_handler = fc_entry,
+	.handler = devpts_tree_return,
+	.data_size = sizeof(struct fs_context *),
+	.maxactive = 32,
+};
+
+/*
+ * mm_alloc(): the mm of an exec. Natively mm_init() records the caller's
+ * user namespace as its owner; here that is always init_user_ns, and
+ * __ptrace_may_access() then wants CAP_SYS_PTRACE over the host to attach
+ * to anything not dumpable, which is every process that changed uid: strace
+ * and gdb on a sudo or su child failed for root in the container. Forked
+ * copies inherit the owner in ds_kernel_clone().
+ */
+static int mm_alloc_return(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct mm_struct *mm = (void *)regs_return_value(regs);
+	struct user_namespace *ns;
+
+	if (!READ_ONCE(mount_live) || IS_ERR_OR_NULL(mm))
+		return 0;
+	ns = child_userns(current_user_ns());
+	if (ns)
+		mm->user_ns = get_user_ns(ns);
+	return 0;
+}
+
+static struct kretprobe mm_alloc_probe = {
+	.kp.symbol_name = "mm_alloc",
+	.handler = mm_alloc_return,
+	.maxactive = 32,
+};
 
 /* sget_fc(fc, test, set): a new super_block takes the context's owner. */
 static int sget_fc_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
@@ -298,6 +414,9 @@ int ds_fuse_register_init_guard(void);
 #endif
 
 static struct kretprobe *const mount_probes[] = {
+	&vfs_get_tree_probe,
+	&reconfigure_super_probe,
+	&mm_alloc_probe,
 	&copy_mnt_ns_probe, &fs_context_mount_probe,
 	&fs_context_reconfigure_probe, &sget_fc_probe,
 	&copy_utsname_probe, &copy_cgroup_ns_probe, &copy_time_ns_probe,

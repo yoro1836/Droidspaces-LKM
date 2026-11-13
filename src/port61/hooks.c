@@ -237,6 +237,11 @@ static struct ds_hook hooks[] = {
 	HOOK("cap_inode_getsecurity", ds_cap_inode_getsecurity),
 	HOOK("cap_convert_nscap", ds_cap_convert_nscap),
 	HOOK("get_vfs_caps_from_disk", ds_get_vfs_caps_from_disk),
+	/* ACL entries and the audit login uid in the caller's ids (live-ids.c). */
+	HOOK("do_setxattr", ds_do_setxattr),
+	HOOK("do_getxattr", ds_do_getxattr),
+	HOOK("proc_loginuid_read", ds_proc_loginuid_read),
+	HOOK("proc_loginuid_write", ds_proc_loginuid_write),
 	/* Owners as seen from the caller's namespace (below KernelSU's newfstatat probe). */
 	HOOK("cp_new_stat", ds_cp_new_stat),
 	HOOK("cp_statx", ds_cp_statx),
