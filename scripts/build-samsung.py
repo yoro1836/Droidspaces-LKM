@@ -34,6 +34,7 @@ MODULES = {
     'xt_addrtype': ('source', 'TARGET=xt_addrtype', 'PORT_DIR', 'xt_addrtype.ko'),
     'ip6table_nat': ('source', 'TARGET=ip6table_nat', 'PORT_DIR', 'ip6table_nat.ko'),
     'macvlan': ('source', 'TARGET=macvlan', 'PORT_DIR', 'macvlan.ko'),
+    'ipvlan': ('source', 'TARGET=ipvlan', 'PORT_DIR', 'ipvlan.ko'),
     'netfilter61': ('source', 'TARGET=netfilter61', 'PORT_DIR', 'droidspaces_netfilter.ko'),
     'tcp_bbr3': ('source', 'TARGET=tcp_bbr3', 'PORT_DIR', 'tcp_bbr3.ko'),
 }

@@ -19,3 +19,11 @@ site.
 Device (SM-S921N, 6.1.162-android14-11; macvlan sha256 3a9a56c30b3d0d92...):
 with both modules loaded, `droidspaces check` (v7.2.0) reports Macvlan
 support and IPv6 NAT support as present and completes without a fault.
+
+drivers/net/ipvlan/{ipvlan.h,ipvlan_core.c,ipvlan_main.c} (CONFIG_IPVLAN is
+not set), copied without modification into src/net61/ipvlan. ipvlan_l3s.c is
+left out: L3S needs CONFIG_NET_L3_MASTER_DEV, a bool the device kernel was
+built without, so the module offers the l2 and l3 modes and the vendor
+header's own stubs refuse l3s. All 98 imports are in the vendor
+Module.symvers. Build: scripts/build-samsung.py 6.1 --module ipvlan ...
+Not loaded on a device yet.
