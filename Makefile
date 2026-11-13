@@ -70,11 +70,6 @@ obj-m := macvlan.o
 macvlan-y := src/net61/macvlan.o
 # if_macvlan.h turns macvlan_dev_real_dev() into BUG() unless the option is on.
 ccflags-y += -DCONFIG_MACVLAN_MODULE=1
-else ifeq ($(TARGET),ipvlan)
-# android14-6.1 vendor ipvlan (src/net61/ipvlan). L2 and L3 modes only: L3S
-# needs CONFIG_NET_L3_MASTER_DEV in the kernel itself.
-obj-m := ipvlan.o
-ipvlan-y := src/net61/ipvlan/ipvlan_core.o src/net61/ipvlan/ipvlan_main.o
 else ifeq ($(TARGET),tcp_bbr3)
 # BBRv3 for android14-6.1 as its own congestion control, "bbr3" (src/bbr3).
 obj-m := tcp_bbr3.o
