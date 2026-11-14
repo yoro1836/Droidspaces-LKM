@@ -45,10 +45,22 @@ built=$(find build-producer -name 'libdisplay_producer.so*' -type f | head -1)
 # just the files it had modified, so everything else stays built.
 stamp="$PHOC_TAG $ANLAND_REV $(sha256sum < "$HERE/phoc-anland.patch")"
 if [[ $(cat phoc/.anland-stamp 2>/dev/null) != "$stamp" ]]; then
+    # Keep the files the old patch produced. Whatever the new patch produces
+    # byte for byte the same gets its old mtime back, so a change in one file
+    # of the patch recompiles that file and not all it touches.
+    mapfile -t patched < <(git -C phoc apply --numstat "$HERE/phoc-anland.patch" | cut -f3)
+    rm -rf .prev && mkdir .prev
+    for f in "${patched[@]}"; do
+        [[ -f phoc/$f ]] && { mkdir -p ".prev/$(dirname "$f")"; cp -p "phoc/$f" ".prev/$f"; }
+    done
     # not the wrap file: touching it would cost a whole wlroots rebuild
     git -C phoc checkout -q -f -- . ':!subprojects/wlroots.wrap'
     rm -rf phoc/src/anland/mango phoc/src/anland/{text-stub.c,glue.c,unhook.c,phoc-anland.h}
     git -C phoc apply "$HERE/phoc-anland.patch"
+    for f in "${patched[@]}"; do
+        [[ -f .prev/$f ]] && cmp -s ".prev/$f" "phoc/$f" && touch -r ".prev/$f" "phoc/$f"
+    done
+    rm -rf .prev
     echo "$stamp" > phoc/.anland-stamp
 fi
 # Mango's backend goes in unchanged.
