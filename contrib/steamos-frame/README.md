@@ -29,6 +29,10 @@ The same helper creates `/dev/ntsync` (`72-droidspaces-ntsync.rules`) when the
 host kernel has the ntsync driver, so Wine and Proton in the container can use
 it.
 
+The scan also creates `/dev/uinput`. Steam Input gives a game its controller as
+a virtual pad made through uinput, so without the node Steam's own UI works
+and no game sees a controller.
+
 `/etc/droidspaces-prep/devnode scan` runs the same scan by hand.
 
 ```sh

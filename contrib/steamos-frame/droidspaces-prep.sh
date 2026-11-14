@@ -172,7 +172,8 @@ install_file etc/droidspaces-prep/devnode 0755 <<'DEVNODE'
 #!/bin/sh
 # Create or remove one device node in the container's isolated /dev.
 # Called by 71-droidspaces-gamepad.rules and 72-droidspaces-ntsync.rules;
-# "scan" picks up what was already there when the container started.
+# "scan" picks up what was already there when the container started, uinput
+# included.
 #
 # With Hardware Access on, /dev is the kernel devtmpfs: the nodes already exist
 # and must not be touched from here.
@@ -183,6 +184,7 @@ node_path() {
 		event[0-9]*|js[0-9]*) echo "/dev/input/$1" ;;
 		hidraw[0-9]*) echo "/dev/$1" ;;
 		ntsync) echo "/dev/ntsync" ;;
+		uinput) echo "/dev/uinput" ;;
 		*) return 1 ;;
 	esac
 }
@@ -217,6 +219,14 @@ case "$1" in
 		if [ -e /sys/class/misc/ntsync/dev ]; then
 			IFS=: read -r maj min < /sys/class/misc/ntsync/dev
 			"$0" add ntsync "$maj" "$min"
+		fi
+		# Steam Input hands a game its controller as a virtual pad made through
+		# uinput. Without the node Steam's own UI still works, it reads the real
+		# controller, and every game sees no controller at all. The pad it makes
+		# is a USB joystick to the rule above, so its event node follows.
+		if [ -e /sys/class/misc/uinput/dev ]; then
+			IFS=: read -r maj min < /sys/class/misc/uinput/dev
+			"$0" add uinput "$maj" "$min"
 		fi
 		;;
 	*)
