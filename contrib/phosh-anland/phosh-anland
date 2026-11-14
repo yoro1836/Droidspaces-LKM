@@ -3,8 +3,18 @@
 # desktop user, with the phoc from build.sh in place of the system one.
 set -uo pipefail
 PREFIX=${PHOC_ANLAND_PREFIX:-/usr/lib/phoc-anland}
+
+# Phoc runs this inside the session it made. Phosh quits at once when there
+# is no screen, and there is none until the Anland viewer on the phone has
+# been opened, so wait for the output before starting the shell.
+if [[ ${1:-} == --session ]]; then
+    echo 'phosh-anland: waiting for the Anland display, open it on the phone now' >&2
+    until wayland-info 2>/dev/null | grep -q wl_output; do sleep 0.5; done
+    exec "${PHOSH_SESSION_BIN:-gnome-session}" --session=phosh
+fi
 [[ -x "$PREFIX/bin/phoc" ]] || { echo "phosh-anland: run build.sh first, no phoc in $PREFIX" >&2; exit 1; }
 command -v gnome-session >/dev/null || { echo "phosh-anland: install the phosh package" >&2; exit 1; }
+command -v wayland-info >/dev/null || { echo "phosh-anland: install wayland-utils (build.sh does)" >&2; exit 1; }
 
 export ANLAND=1 ANLAND_SOCKET=${ANLAND_SOCKET:-/run/display.sock}
 export ANLAND_DRM_DEVICE=${ANLAND_DRM_DEVICE:-/dev/dri/renderD128}
@@ -27,4 +37,5 @@ ini=/usr/share/phosh/phoc.ini
 # Same line as Phosh's own phosh-session, minus the DRM and libinput backends.
 run=()
 [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] || run=(dbus-run-session --)
-exec "${run[@]}" "$PREFIX/bin/phoc" -S -C "$ini" -E "${PHOSH_SESSION_BIN:-gnome-session} --session=phosh"
+self=$(realpath "$0")
+exec "${run[@]}" "$PREFIX/bin/phoc" -S -C "$ini" -E "$(printf '%q' "$self") --session"

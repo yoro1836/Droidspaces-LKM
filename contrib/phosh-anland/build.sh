@@ -16,7 +16,7 @@ sudo pacman -S --needed --noconfirm base-devel git cmake meson ninja pkgconf \
     libdisplay-info hwdata libliftoff lcms2 vulkan-headers vulkan-icd-loader glslang \
     libxcb xcb-util-wm xcb-util-renderutil xcb-util-errors xorg-xwayland \
     glib2 glib2-devel json-glib gnome-desktop gsettings-desktop-schemas dconf \
-    systemd-libs libpipewire libpulse
+    systemd-libs libpipewire libpulse wayland-utils
 [[ ${1:-} != --deps ]] || exit 0
 
 mkdir -p "$WORK" && cd "$WORK"
