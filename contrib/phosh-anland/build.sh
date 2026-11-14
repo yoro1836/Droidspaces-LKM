@@ -71,7 +71,7 @@ if [[ $(cat phoc/.anland-stamp 2>/dev/null) != "$stamp" ]]; then
 fi
 # Mango's backend goes in unchanged.
 mkdir -p phoc/src/anland
-for f in anland.c output.c buffer.c input.c clipboard.c anland.h internal.h text.h; do
+for f in anland.c output.c buffer.c input.c clipboard.c text.c anland.h internal.h text.h; do
     put "anland/producers/mango/anland_backend/$f" "phoc/src/anland/$f"
 done
 
