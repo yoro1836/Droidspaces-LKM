@@ -30,7 +30,14 @@ export WLR_RENDERER=${WLR_RENDERER:-vulkan}
 export MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-zink}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=Phosh:GNOME XDG_SESSION_DESKTOP=phosh
-export PULSE_SERVER=${PULSE_SERVER:-unix:$XDG_RUNTIME_DIR/pulse/native}
+# Sound leaves through Anland too: the backend puts a sink into the session's
+# own PipeWire and sends what arrives there to Android along with the frames.
+# Droidspaces' PulseAudio option points PULSE_SERVER at a server on the phone
+# instead, which has nothing to do with this route, so say where to go.
+systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null ||
+    echo 'phosh-anland: no sound, install pipewire pipewire-pulse wireplumber' >&2
+export PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native
+systemctl --user set-environment PULSE_SERVER="$PULSE_SERVER" 2>/dev/null || true
 
 ini=/usr/share/phosh/phoc.ini
 [[ -f /etc/phosh/phoc.ini ]] && ini=/etc/phosh/phoc.ini
