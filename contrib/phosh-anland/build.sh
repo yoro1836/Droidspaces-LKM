@@ -37,9 +37,15 @@ if [[ ! -f build-producer/build.ninja ]]; then
         -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib
 fi
 cmake --build build-producer
-built=$(find build-producer -name 'libdisplay_producer.so*' -type f | head -1)
-[[ -e $PREFIX/lib/pkgconfig/display-producer.pc && ! $built -nt $PREFIX/lib/libdisplay_producer.so ]] ||
+# Whether an install is due is read off a stamp in the build directory, not
+# off the installed files: their mtimes are copied and rounded on the way, so
+# "is the build newer" came out true on some filesystems and sudo ran for
+# nothing.
+newer() { [[ ! -e $1/.installed || -n $(find "$1" -type f -newer "$1/.installed" \( -name "$2" -o -name "$3" \) -print -quit) ]]; }
+if [[ ! -e $PREFIX/lib/pkgconfig/display-producer.pc ]] || newer build-producer 'libdisplay_producer.so*' '*.pc'; then
     sudo cmake --install build-producer
+    touch build-producer/.installed
+fi
 
 # The patch is put on again only when it changed. Undoing the old one touches
 # just the files it had modified, so everything else stays built.
@@ -85,9 +91,8 @@ fi
         -Dtests=false -Dman=false -Dgtk_doc=false \
         -Dc_link_args="-Wl,-rpath,$PREFIX/lib"
 meson compile -C build-phoc
-if [[ ! -x $PREFIX/bin/phoc || build-phoc/src/phoc -nt $PREFIX/bin/phoc ||
-      -n $(find build-phoc -name 'libphoc.so*' -newer "$PREFIX/bin/phoc" -print -quit) ]]; then
+if [[ ! -x $PREFIX/bin/phoc ]] || newer build-phoc phoc 'libphoc.so*'; then
     sudo meson install -C build-phoc --no-rebuild
-    sudo touch "$PREFIX/bin/phoc"
+    touch build-phoc/.installed
 fi
 echo "installed: $PREFIX/bin/phoc"
