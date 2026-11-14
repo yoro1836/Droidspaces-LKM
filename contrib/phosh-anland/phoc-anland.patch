@@ -84,6 +84,19 @@ index 0000000..4e55327
 +/* Mango's text-input relay has no counterpart here, see text-stub.c. */
 +#pragma once
 +struct mango_input_method_relay;
+diff --git a/src/anland/phoc-anland.h b/src/anland/phoc-anland.h
+new file mode 100644
+index 0000000..65ef82f
+--- /dev/null
++++ b/src/anland/phoc-anland.h
+@@ -0,0 +1,7 @@
++/* What phoc itself calls, on top of mango's anland.h. */
++#pragma once
++
++#include "anland.h"
++
++struct wlr_backend *phoc_anland_backend_create (struct wl_event_loop *loop, const char *socket_path);
++void                phoc_anland_backend_unhook_seat (void);
 diff --git a/src/anland/text-stub.c b/src/anland/text-stub.c
 new file mode 100644
 index 0000000..028f0a8
@@ -132,11 +145,49 @@ index 0000000..028f0a8
 +void mango_anland_text_set_ime_grab (struct mango_anland_text *text, bool grabbed) { (void)text; (void)grabbed; }
 +void mango_anland_text_reset (struct mango_anland_text *text) { (void)text; }
 +void mango_anland_text_destroy (struct mango_anland_text *text) { (void)text; }
+diff --git a/src/anland/unhook.c b/src/anland/unhook.c
+new file mode 100644
+index 0000000..a045b03
+--- /dev/null
++++ b/src/anland/unhook.c
+@@ -0,0 +1,32 @@
++/*
++ * The backend listens on the seat for selection and focus changes and only
++ * lets go in its own destroy. Mango destroys the backend first. Phoc destroys
++ * its seats first, and wlroots asserts that nobody is still listening, so
++ * phoc aborted on every exit. Let go when phoc is about to drop its input.
++ */
++#include "internal.h"
++#include "phoc-anland.h"
++
++static struct anland_backend *created;
++
++struct wlr_backend *
++phoc_anland_backend_create (struct wl_event_loop *loop, const char *socket_path)
++{
++  struct wlr_backend *base = mango_anland_backend_create (loop, socket_path);
++
++  created = base ? wl_container_of (base, created, base) : NULL;
++  return base;
++}
++
++void
++phoc_anland_backend_unhook_seat (void)
++{
++  if (!created)
++    return;
++  if (created->selection_listener_set)
++    wl_list_remove (&created->selection_listener.link);
++  if (created->focus_listener_set)
++    wl_list_remove (&created->focus_change.link);
++  created->selection_listener_set = created->focus_listener_set = false;
++  created = NULL;
++}
 diff --git a/src/meson.build b/src/meson.build
-index 928c451..805c00d 100644
+index 928c451..bc6a81e 100644
 --- a/src/meson.build
 +++ b/src/meson.build
-@@ -193,6 +193,23 @@ phoc_deps = [
+@@ -193,6 +193,24 @@ phoc_deps = [
    xkbcommon,
  ]
  
@@ -152,6 +203,7 @@ index 928c451..805c00d 100644
 +    'anland/clipboard.c',
 +    'anland/text-stub.c',
 +    'anland/glue.c',
++    'anland/unhook.c',
 +  )
 +  phoc_deps += anland_dep
 +  add_project_arguments('-DHAVE_ANLAND', language: 'c')
@@ -217,7 +269,7 @@ index d95d6db..40adf7b 100644
      goto out;
  
 diff --git a/src/server.c b/src/server.c
-index 6d730bb..12bde84 100644
+index 6d730bb..04999f6 100644
 --- a/src/server.c
 +++ b/src/server.c
 @@ -17,6 +17,9 @@
@@ -225,7 +277,7 @@ index 6d730bb..12bde84 100644
  #include "surface.h"
  #include "utils.h"
 +#ifdef HAVE_ANLAND
-+#include "anland/anland.h"
++#include "anland/phoc-anland.h"
 +#endif
  #include "xdg-dialog.h"
  #include "xdg-toplevel.h"
@@ -238,10 +290,20 @@ index 6d730bb..12bde84 100644
 +  /* With ANLAND_SOCKET set the screen is an Android surface and input comes
 +   * from Android: no DRM, no libinput, no session to open devices through. */
 +  if (g_getenv ("ANLAND_SOCKET") && *g_getenv ("ANLAND_SOCKET")) {
-+    self->backend = mango_anland_backend_create (wl_display_get_event_loop (self->wl_display),
-+                                                 g_getenv ("ANLAND_SOCKET"));
++    self->backend = phoc_anland_backend_create (wl_display_get_event_loop (self->wl_display),
++                                                g_getenv ("ANLAND_SOCKET"));
 +  } else
 +#endif
    self->backend = wlr_backend_autocreate (wl_display_get_event_loop (self->wl_display),
                                            &self->session);
    if (self->backend == NULL) {
+@@ -548,6 +559,9 @@ phoc_server_dispose (GObject *object)
+ 
+   wl_display_destroy_clients (self->wl_display);
+ 
++#ifdef HAVE_ANLAND
++  phoc_anland_backend_unhook_seat ();
++#endif
+   g_clear_object (&self->input);
+ 
+   g_clear_object (&self->renderer);

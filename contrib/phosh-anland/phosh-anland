@@ -13,6 +13,11 @@ export WLR_RENDER_DRM_DEVICE=${WLR_RENDER_DRM_DEVICE:-$ANLAND_DRM_DEVICE}
 
 # This phoc's own settings schema, in case the system phoc is another version.
 export GSETTINGS_SCHEMA_DIR=$PREFIX/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}
+# Mesa's GL driver for this GPU family wants a newer kernel interface than an
+# Android kernel has, while its Vulkan driver works. So the compositor renders
+# with Vulkan, and GL programs in the session go through Zink on top of it.
+export WLR_RENDERER=${WLR_RENDERER:-vulkan}
+export MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-zink}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=Phosh:GNOME XDG_SESSION_DESKTOP=phosh
 export PULSE_SERVER=${PULSE_SERVER:-unix:$XDG_RUNTIME_DIR/pulse/native}
