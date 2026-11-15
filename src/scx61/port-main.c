@@ -80,19 +80,28 @@ static int __init scx_port_init(void)
 		return -EOPNOTSUPP;
 
 	/* Samsung's EMS must be kept from running our tasks itself, see
-	 * scx61_ems_forget(). Without its BTF the node's place is not known
-	 * for sure, and guessing it would have us write into EMS's data.
+	 * scx61_ems_forget(). It is known by its module BTF, which also says
+	 * where its list node is: guessing that would have us write into its
+	 * data. Anything else that hooks fair's pick is not known at all.
 	 */
-	if (kallsyms_name_to_addr("tex_replace_next_task_fair")) {
+	{
 		int node = scx61_module_member_offset("ems", "ems_task_struct", "qjump_node");
 		int nr_tex = scx61_module_member_offset("ems", "_rq_avd1", "nr_tex");
 
-		if (node < 0 || nr_tex < 0) {
-			pr_err("Samsung EMS without BTF: cannot coexist with it\n");
+		if (node >= 0 && nr_tex >= 0) {
+			pr_info("Samsung EMS: queue jump node at +%d, count at +%d\n", node, nr_tex);
+			scx61_set_ems_qjump(offsetof(struct task_struct, android_vendor_data1) + node,
+					    nr_tex);
+		} else if (scx61_fair_pick_is_hooked()) {
+			/* EMS was once looked for by a function name, which its
+			 * build on the device did not have: the device went down.
+			 */
+			pr_err("a module replaces fair's pick and is not an EMS with BTF (%d, %d): "
+			       "cannot coexist with it\n", node, nr_tex);
 			return -EOPNOTSUPP;
+		} else {
+			pr_info("no Samsung EMS\n");
 		}
-		pr_info("Samsung EMS: queue jump node at +%d, count at +%d\n", node, nr_tex);
-		scx61_set_ems_qjump(offsetof(struct task_struct, android_vendor_data1) + node, nr_tex);
 	}
 
 	/* Types first: upstream registers kfuncs by BTF id. Nothing of the

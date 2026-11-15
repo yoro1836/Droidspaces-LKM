@@ -21,6 +21,7 @@ int scx61_st_reg(void *kdata);
 void scx61_st_unreg(void *kdata);
 
 void scx61_set_ems_qjump(int node_offset, int nr_tex_offset);
+bool scx61_fair_pick_is_hooked(void);
 
 /* port-btf.c */
 int scx61_module_member_offset(const char *mod, const char *type, const char *member);

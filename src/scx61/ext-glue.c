@@ -124,6 +124,17 @@ static void scx61_flush_put(struct rq *rq, struct task_struct *next)
 	if (!prev || per_cpu(scx61_picking, cpu_of(rq)))
 		return;
 	*pending = NULL;
+	/* A task that ran was taken off the runnable list by upstream's
+	 * set_next_task. One that is still on it was run by something else,
+	 * as Samsung's EMS did before it was kept from it: putting it would
+	 * add it twice, which took the device down. Say so instead.
+	 */
+	if ((scx_ent(prev)->flags & SCX_TASK_QUEUED) &&
+	    !list_empty(&scx_ent(prev)->runnable_node)) {
+		WARN_ONCE(1, "sched_ext: %s[%d] ran without having been picked by the class\n",
+			  prev->comm, prev->pid);
+		return;
+	}
 	/* upstream dereferences next for a task that is still runnable */
 	if (!next && (scx_ent(prev)->flags & SCX_TASK_QUEUED))
 		next = rq->idle;
@@ -253,6 +264,11 @@ void scx61_set_ems_qjump(int node_offset, int nr_tex_offset)
 /* What EMS's tex_remove_from_qjump_list() does: unlink, and one less in the
  * count it keeps in the rq's vendor data, whose first word points to it.
  */
+bool scx61_fair_pick_is_hooked(void)
+{
+	return rcu_access_pointer(__tracepoint_android_rvh_replace_next_task_fair.funcs);
+}
+
 static void scx61_ems_forget(struct rq *rq, struct task_struct *p)
 {
 	struct list_head *node;
