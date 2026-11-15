@@ -19,3 +19,9 @@
 #include "compat.h"
 #include "ext-gen.h"
 #include "ext-gen.c"
+
+/* upstream registers itself from an initcall; a module has one of its own. */
+int __init scx61_core_init(void)
+{
+	return scx_init();
+}

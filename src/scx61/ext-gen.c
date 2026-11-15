@@ -1397,7 +1397,7 @@ static struct task_struct *scx_task_iter_next(struct scx_task_iter *iter)
 			return NULL;
 		if (!(pos->flags & SCX_TASK_CURSOR)) {
 			list_move(cursor, &pos->tasks_node);
-			return container_of(pos, struct task_struct, scx);
+			return scx_task_of(pos);
 		}
 	}
 
@@ -1696,12 +1696,12 @@ static void local_dsq_post_enq(struct scx_dispatch_q *dsq, struct task_struct *p
 		return;
 
 	if ((enq_flags & SCX_ENQ_PREEMPT) && p != rq->curr &&
-	    rq->curr->sched_class == &ext_sched_class) {
-		rq->scx_ent(curr)->slice = 0;
+	    task_is_scx(rq->curr)) {
+		scx_ent(rq->curr)->slice = 0;
 		preempt = true;
 	}
 
-	if (preempt || sched_class_above(&ext_sched_class, rq->curr->sched_class))
+	if (preempt || scx_above_task(rq->curr))
 		resched_curr(rq);
 }
 
@@ -2775,7 +2775,7 @@ static void flush_dispatch_buf(struct rq *rq)
 static int balance_one(struct rq *rq, struct task_struct *prev)
 {
 	struct scx_dsp_ctx *dspc = this_cpu_ptr(scx_dsp_ctx);
-	bool prev_on_scx = prev->sched_class == &ext_sched_class;
+	bool prev_on_scx = task_is_scx(prev);
 	bool prev_on_rq = scx_ent(prev)->flags & SCX_TASK_QUEUED;
 	int nr_loops = SCX_DSP_MAX_LOOPS;
 
@@ -2938,8 +2938,7 @@ static void process_ddsp_deferred_locals(struct rq *rq)
 	 * list_for_each_entry_safe() as dispatch_local_dsq() may unlock @rq
 	 * temporarily.
 	 */
-	while ((p = list_first_entry_or_null(&scx_rq(rq)->ddsp_deferred_locals,
-				struct task_struct, scx.dsq_list.node))) {
+	while ((p = scx_first_task_or_null(&scx_rq(rq)->ddsp_deferred_locals, dsq_list.node))) {
 		struct scx_dispatch_q *dsq;
 		u64 dsq_id = scx_ent(p)->ddsp_dsq_id;
 		u64 enq_flags = scx_ent(p)->ddsp_enq_flags;
@@ -3030,7 +3029,7 @@ static void switch_class(struct rq *rq, struct task_struct *next)
 	 * if the next class is below SCX (in which case the BPF scheduler has
 	 * actively decided not to schedule any tasks on the CPU).
 	 */
-	if (sched_class_above(&ext_sched_class, next_class))
+	if (scx_above_task(next))
 		return;
 
 	/*
@@ -3088,7 +3087,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p,
 		 * runnable. @p's cookie then won't match the core's, so skip
 		 * the warning in that case.
 		 */
-		if (sched_class_above(&ext_sched_class, next->sched_class)) {
+		if (scx_above_task(next)) {
 			WARN_ON_ONCE(sched_cpu_cookie_match(rq, p) &&
 				     !static_branch_unlikely(&scx_ops_enq_last));
 			do_enqueue_task(rq, p, SCX_ENQ_LAST, -1);
@@ -3108,14 +3107,13 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p,
 	}
 
 switch_class:
-	if (next && next->sched_class != &ext_sched_class)
+	if (next && !task_is_scx(next))
 		switch_class(rq, next);
 }
 
 static struct task_struct *first_local_task(struct rq *rq)
 {
-	return list_first_entry_or_null(&scx_rq(rq)->local_dsq.list,
-					struct task_struct, scx.dsq_list.node);
+	return scx_first_task_or_null(&scx_rq(rq)->local_dsq.list, dsq_list.node);
 }
 
 static struct task_struct *pick_task_scx(struct rq *rq)
@@ -3148,7 +3146,7 @@ static struct task_struct *pick_task_scx(struct rq *rq)
 			kick_idle = true;
 		}
 	} else if (unlikely(keep_prev &&
-			    prev->sched_class != &ext_sched_class)) {
+			    !task_is_scx(prev))) {
 		/*
 		 * Can happen while enabling as SCX_RQ_BAL_PENDING assertion is
 		 * conditional on scx_enabled() and may have been skipped.
@@ -3867,7 +3865,7 @@ void scx_post_fork(struct task_struct *p)
 		 * Otherwise, it'll be enabled in switching_to_scx() if and
 		 * when it's ever configured to run with a SCHED_EXT policy.
 		 */
-		if (p->sched_class == &ext_sched_class) {
+		if (task_is_scx(p)) {
 			struct rq_flags rf;
 			struct rq *rq;
 
@@ -3976,7 +3974,7 @@ bool scx_can_stop_tick(struct rq *rq)
 	if (scx_rq_bypassing(rq))
 		return false;
 
-	if (p->sched_class != &ext_sched_class)
+	if (!task_is_scx(p))
 		return true;
 
 	/*
@@ -4211,7 +4209,7 @@ static inline void scx_cgroup_unlock(void) {}
  * - task_fork/dead: We need fork/dead notifications for all tasks regardless of
  *   their current sched_class. Call them directly from sched core instead.
  */
-DEFINE_SCHED_CLASS(ext) = {
+static const struct scx61_class ext_class = {
 	.enqueue_task		= enqueue_task_scx,
 	.dequeue_task		= dequeue_task_scx,
 	.yield_task		= yield_task_scx,
@@ -4266,7 +4264,7 @@ static struct scx_dispatch_q *create_dsq(u64 dsq_id, int node)
 	if (dsq_id & SCX_DSQ_FLAG_BUILTIN)
 		return ERR_PTR(-EINVAL);
 
-	dsq = kmalloc_node(sizeof(*dsq), GFP_KERNEL, node);
+	dsq = kmalloc_node(sizeof(*dsq), GFP_ATOMIC, node);
 	if (!dsq)
 		return ERR_PTR(-ENOMEM);
 
@@ -4509,7 +4507,7 @@ static const struct kobj_type scx_ktype = {
 	.default_groups = scx_sched_groups,
 };
 
-static int scx_uevent(const struct kobject *kobj, struct kobj_uevent_env *env)
+static int scx_uevent(struct kobject *kobj, struct kobj_uevent_env *env)
 {
 	return add_uevent_var(env, "SCXOPS=%s", scx_ops.name);
 }
@@ -4761,8 +4759,6 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		const struct sched_class *new_class = scx_setscheduler_class(p);
 		struct sched_enq_and_set_ctx ctx;
 
-		if (old_class != new_class && p->se.sched_delayed)
-			dequeue_task(task_rq(p), p, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
 
 		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
@@ -5146,7 +5142,7 @@ static void scx_dump_state(struct scx_exit_info *ei, size_t dump_len)
 				seq_buf_set_overflow(&s);
 		}
 
-		if (rq->curr->sched_class == &ext_sched_class)
+		if (task_is_scx(rq->curr))
 			scx_dump_task(&s, &dctx, rq->curr, '*');
 
 		scx_for_each_task(p, &scx_rq(rq)->runnable_list, runnable_node)
@@ -5503,8 +5499,6 @@ static void scx_ops_enable_workfn(struct kthread_work *work)
 		if (!tryget_task_struct(p))
 			continue;
 
-		if (old_class != new_class && p->se.sched_delayed)
-			dequeue_task(task_rq(p), p, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
 
 		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
@@ -5623,7 +5617,6 @@ static bool set_arg_maybe_null(const char *op, int arg_n, int off, int size,
 			       const struct bpf_prog *prog,
 			       struct bpf_insn_access_aux *info)
 {
-	struct btf *btf = bpf_get_btf_vmlinux();
 	const struct bpf_struct_ops_desc *st_ops_desc;
 	const struct btf_member *member;
 	const struct btf_type *t;
@@ -5636,7 +5629,7 @@ static bool set_arg_maybe_null(const char *op, int arg_n, int off, int size,
 
 	/* btf_id should be the type id of struct sched_ext_ops */
 	btf_id = prog->aux->attach_btf_id;
-	st_ops_desc = bpf_struct_ops_find(btf, btf_id);
+	st_ops_desc = bpf_struct_ops_find(btf_id);
 	if (!st_ops_desc)
 		return false;
 
@@ -5695,12 +5688,13 @@ static bool bpf_scx_is_valid_access(int off, int size,
 }
 
 static int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
-				     const struct bpf_reg_state *reg, int off,
-				     int size)
+				     const struct btf *btf,
+				     const struct btf_type *t, int off, int size,
+				     enum bpf_access_type atype, u32 *next_btf_id,
+				     enum bpf_type_flag *flag)
 {
-	const struct btf_type *t;
-
-	t = btf_type_by_id(reg->btf, reg->btf_id);
+	if (atype == BPF_READ)
+		return btf_struct_access(log, btf, t, off, size, atype, next_btf_id, flag);
 	if (t == task_struct_type) {
 		if (off >= (SCX_ENT_OFFSET + offsetof(struct sched_ext_entity, slice)) &&
 		    off + size <= (SCX_ENT_OFFSET + offsetofend(struct sched_ext_entity, slice)))
@@ -5800,7 +5794,7 @@ static int bpf_scx_check_member(const struct btf_type *t,
 	case offsetof(struct sched_ext_ops, exit):
 		break;
 	default:
-		if (prog->sleepable)
+		if (prog->aux->sleepable)
 			return -EINVAL;
 	}
 
@@ -5922,7 +5916,7 @@ static struct sched_ext_ops __bpf_ops_sched_ext_ops = {
 	.dump_task = dump_task_stub,
 };
 
-static struct bpf_struct_ops bpf_sched_ext_ops = {
+static struct scx61_struct_ops bpf_sched_ext_ops = {
 	.verifier_ops = &bpf_scx_verifier_ops,
 	.reg = bpf_scx_reg,
 	.unreg = bpf_scx_unreg,
@@ -5941,7 +5935,7 @@ static struct bpf_struct_ops bpf_sched_ext_ops = {
  * System integration and init.
  */
 
-static void sysrq_handle_sched_ext_reset(u8 key)
+static void sysrq_handle_sched_ext_reset(int key)
 {
 	if (scx_ops_helper)
 		scx_ops_disable(SCX_EXIT_SYSRQ);
@@ -5956,7 +5950,7 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
 	.enable_mask	= SYSRQ_ENABLE_RTNICE,
 };
 
-static void sysrq_handle_sched_ext_dump(u8 key)
+static void sysrq_handle_sched_ext_dump(int key)
 {
 	struct scx_exit_info ei = { .kind = SCX_EXIT_NONE, .reason = "SysRq-D" };
 
@@ -6003,8 +5997,8 @@ static bool kick_one_cpu(s32 cpu, struct rq *this_rq, unsigned long *pseqs)
 	 */
 	if (cpu_online(cpu) || cpu == cpu_of(this_rq)) {
 		if (cpumask_test_cpu(cpu, this_scx->cpus_to_preempt)) {
-			if (rq->curr->sched_class == &ext_sched_class)
-				rq->scx_ent(curr)->slice = 0;
+			if (task_is_scx(rq->curr))
+				scx_ent(rq->curr)->slice = 0;
 			cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
 		}
 
@@ -6250,7 +6244,6 @@ BTF_ID_FLAGS(func, scx_bpf_select_cpu_dfl, KF_RCU)
 BTF_KFUNCS_END(scx_kfunc_ids_select_cpu)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_select_cpu = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_select_cpu,
 };
 
@@ -6391,7 +6384,6 @@ BTF_ID_FLAGS(func, scx_bpf_dispatch_vtime, KF_RCU)
 BTF_KFUNCS_END(scx_kfunc_ids_enqueue_dispatch)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_enqueue_dispatch = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_enqueue_dispatch,
 };
 
@@ -6670,7 +6662,6 @@ BTF_ID_FLAGS(func, scx_bpf_dispatch_vtime_from_dsq, KF_RCU)
 BTF_KFUNCS_END(scx_kfunc_ids_dispatch)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_dispatch = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_dispatch,
 };
 
@@ -6701,8 +6692,7 @@ __bpf_kfunc u32 scx_bpf_reenqueue_local(void)
 	 * @scx_rq(rq)->local_dsq. Move all candidate tasks off to a private list
 	 * first to avoid processing the same tasks repeatedly.
 	 */
-	list_for_each_entry_safe(p, n, &scx_rq(rq)->local_dsq.list,
-				 scx.dsq_list.node) {
+	scx_for_each_task_safe(p, n, &scx_rq(rq)->local_dsq.list, dsq_list.node) {
 		/*
 		 * If @p is being migrated, @p's current CPU may not agree with
 		 * its allowed CPUs and the migration_cpu_stop is about to
@@ -6721,7 +6711,7 @@ __bpf_kfunc u32 scx_bpf_reenqueue_local(void)
 		list_add_tail(&scx_ent(p)->dsq_list.node, &tasks);
 	}
 
-	list_for_each_entry_safe(p, n, &tasks, scx.dsq_list.node) {
+	scx_for_each_task_safe(p, n, &tasks, dsq_list.node) {
 		list_del_init(&scx_ent(p)->dsq_list.node);
 		do_enqueue_task(rq, p, SCX_ENQ_REENQ, -1);
 		nr_enqueued++;
@@ -6737,7 +6727,6 @@ BTF_ID_FLAGS(func, scx_bpf_reenqueue_local)
 BTF_KFUNCS_END(scx_kfunc_ids_cpu_release)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_cpu_release,
 };
 
@@ -6770,7 +6759,6 @@ BTF_ID_FLAGS(func, scx_bpf_dispatch_vtime_from_dsq, KF_RCU)
 BTF_KFUNCS_END(scx_kfunc_ids_unlocked)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_unlocked = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_unlocked,
 };
 
@@ -7495,7 +7483,6 @@ BTF_ID_FLAGS(func, scx_bpf_task_cgroup, KF_RCU | KF_ACQUIRE)
 BTF_KFUNCS_END(scx_kfunc_ids_any)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_any = {
-	.owner			= THIS_MODULE,
 	.set			= &scx_kfunc_ids_any,
 };
 
@@ -7536,7 +7523,7 @@ static int __init scx_init(void)
 		return ret;
 	}
 
-	ret = register_bpf_struct_ops(&bpf_sched_ext_ops, sched_ext_ops);
+	ret = scx61_register_struct_ops(&bpf_sched_ext_ops);
 	if (ret) {
 		pr_err("sched_ext: Failed to register struct_ops (%d)\n", ret);
 		return ret;
@@ -7562,4 +7549,3 @@ static int __init scx_init(void)
 
 	return 0;
 }
-__initcall(scx_init);

@@ -32,7 +32,7 @@ static inline u32 scx_cpuperf_target(s32 cpu)
 
 static inline bool task_on_scx(const struct task_struct *p)
 {
-	return scx_enabled() && p->sched_class == &ext_sched_class;
+	return scx_enabled() && task_is_scx(p);
 }
 
 #ifdef CONFIG_SCHED_CORE

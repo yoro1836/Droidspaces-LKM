@@ -77,29 +77,197 @@ static inline struct task_struct *scx_task_of(struct sched_ext_entity *ent)
 	return (struct task_struct *)((void *)ent - SCX_ENT_OFFSET);
 }
 
-#define scx_for_each_task(p, head, member)						\
-	for (struct sched_ext_entity *__e =						\
-		     list_first_entry(head, struct sched_ext_entity, member);		\
-	     !list_entry_is_head(__e, head, member) && ((p) = scx_task_of(__e), true);	\
-	     __e = list_next_entry(__e, member))
+/* Walks of a list linked through a member of p->scx. */
+#define __scx_task_at(ent, head, member)						\
+	(list_entry_is_head(ent, head, member) ? NULL : scx_task_of(ent))
+#define __scx_first(head, member)							\
+	__scx_task_at(list_first_entry(head, struct sched_ext_entity, member), head, member)
+#define __scx_last(head, member)							\
+	__scx_task_at(list_last_entry(head, struct sched_ext_entity, member), head, member)
+#define __scx_next(p, head, member)							\
+	__scx_task_at(list_next_entry(scx_ent(p), member), head, member)
+#define __scx_prev(p, head, member)							\
+	__scx_task_at(list_prev_entry(scx_ent(p), member), head, member)
 
+#define scx_for_each_task(p, head, member)						\
+	for ((p) = __scx_first(head, member); (p); (p) = __scx_next(p, head, member))
+#define scx_for_each_task_safe(p, n, head, member)					\
+	for ((p) = __scx_first(head, member),						\
+	     (n) = (p) ? __scx_next(p, head, member) : NULL; (p);			\
+	     (p) = (n), (n) = (p) ? __scx_next(p, head, member) : NULL)
 #define scx_for_each_task_safe_reverse(p, n, head, member)				\
-	for (struct sched_ext_entity *__e =						\
-		     list_last_entry(head, struct sched_ext_entity, member),		\
-	     *__n = list_prev_entry(__e, member);					\
-	     !list_entry_is_head(__e, head, member) && ((p) = scx_task_of(__e), true);	\
-	     __e = __n, __n = list_prev_entry(__n, member))
+	for ((p) = __scx_last(head, member),						\
+	     (n) = (p) ? __scx_prev(p, head, member) : NULL; (p);			\
+	     (p) = (n), (n) = (p) ? __scx_prev(p, head, member) : NULL)
+
+#define scx_first_task_or_null(head, member) ({					\
+	struct sched_ext_entity *__e =						\
+		list_first_entry_or_null(head, struct sched_ext_entity, member);	\
+	__e ? scx_task_of(__e) : NULL; })
+
+/* The class lives in the idle class's slot (see main.c), so its address is
+ * the idle class's, and a task is ours when it has that class without being
+ * the idle task, which alone has pid 0.
+ */
+#define ext_sched_class idle_sched_class
+
+static inline bool task_is_scx(const struct task_struct *p)
+{
+	return p->sched_class == &idle_sched_class && p->pid;
+}
+
+static inline bool scx_above_task(const struct task_struct *p)
+{
+	return p->sched_class == &idle_sched_class && !p->pid;
+}
 
 /* 6.12 core scheduler pieces ext.c refers to. */
+#include <linux/rhashtable.h>
+#include <linux/mmu_context.h>
+
+#define SCHED_EXT		7
 #define ENQUEUE_RQ_SELECTED	0x400	/* never set by this core */
+#define struct_size_t(type, member, count) struct_size((type *)NULL, member, count)
 
 DECLARE_STATIC_KEY_FALSE(__scx_ops_enabled);
 DECLARE_STATIC_KEY_FALSE(__scx_switched_all);
 #define scx_enabled()		static_branch_unlikely(&__scx_ops_enabled)
 #define scx_switched_all()	static_branch_unlikely(&__scx_switched_all)
 
-extern const struct sched_class ext_sched_class;
-
 static inline void trace_sched_ext_dump(const char *line) {}
+static inline bool trace_sched_ext_dump_enabled(void) { return false; }
+
+bool task_should_scx(int policy);
+
+static inline const struct sched_class *__setscheduler_class(int policy, int prio)
+{
+	if (dl_prio(prio))
+		return &dl_sched_class;
+	if (rt_prio(prio))
+		return &rt_sched_class;
+	if (task_should_scx(policy))
+		return &ext_sched_class;
+	return &fair_sched_class;
+}
+
+static inline struct task_struct *tryget_task_struct(struct task_struct *t)
+{
+	return refcount_inc_not_zero(&t->usage) ? t : NULL;
+}
+
+static inline bool task_allowed_on_cpu(struct task_struct *p, int cpu)
+{
+	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+		return false;
+	if (!(p->flags & PF_KTHREAD) && !task_cpu_possible(cpu, p))
+		return false;
+	return true;
+}
+
+static inline unsigned long sched_weight_to_cgroup(unsigned long weight)
+{
+	return clamp_t(unsigned long,
+		       DIV_ROUND_CLOSEST_ULL(weight * CGROUP_WEIGHT_DFL, 1024),
+		       CGROUP_WEIGHT_MIN, CGROUP_WEIGHT_MAX);
+}
+
+/* rt, dl, irq and thermal load tracking belong to fair's tick on 6.1. */
+static inline bool update_other_load_avgs(struct rq *rq) { return false; }
+
+s64 update_curr_common(struct rq *rq);
+
+struct affinity_context {
+	const struct cpumask *new_mask;
+	u32 flags;
+};
+#define set_cpus_allowed_common(p, ac) set_cpus_allowed_common(p, (ac)->new_mask, (ac)->flags)
+
+struct sched_enq_and_set_ctx {
+	struct task_struct *p;
+	int queue_flags;
+	bool queued;
+	bool running;
+};
+void sched_deq_and_put_task(struct task_struct *p, int queue_flags,
+			    struct sched_enq_and_set_ctx *ctx);
+void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx);
+void check_class_changing(struct rq *rq, struct task_struct *p,
+			  const struct sched_class *prev_class);
+void check_class_changed(struct rq *rq, struct task_struct *p,
+			 const struct sched_class *prev_class, int oldprio);
+
+/* The class's methods as 6.12 shapes them. upstream fills one of these and
+ * the idle slot's entry points call through it.
+ */
+struct scx61_class {
+	void (*enqueue_task)(struct rq *rq, struct task_struct *p, int flags);
+	bool (*dequeue_task)(struct rq *rq, struct task_struct *p, int flags);
+	void (*yield_task)(struct rq *rq);
+	bool (*yield_to_task)(struct rq *rq, struct task_struct *p);
+	void (*wakeup_preempt)(struct rq *rq, struct task_struct *p, int flags);
+	int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
+	struct task_struct *(*pick_task)(struct rq *rq);
+	void (*put_prev_task)(struct rq *rq, struct task_struct *p, struct task_struct *next);
+	void (*set_next_task)(struct rq *rq, struct task_struct *p, bool first);
+	int (*select_task_rq)(struct task_struct *p, int task_cpu, int flags);
+	void (*task_woken)(struct rq *this_rq, struct task_struct *task);
+	void (*set_cpus_allowed)(struct task_struct *p, struct affinity_context *ctx);
+	void (*rq_online)(struct rq *rq);
+	void (*rq_offline)(struct rq *rq);
+	void (*task_tick)(struct rq *rq, struct task_struct *p, int queued);
+	void (*switching_to)(struct rq *this_rq, struct task_struct *task);
+	void (*switched_from)(struct rq *this_rq, struct task_struct *task);
+	void (*switched_to)(struct rq *this_rq, struct task_struct *task);
+	void (*reweight_task)(struct rq *this_rq, struct task_struct *task, const struct load_weight *lw);
+	void (*prio_changed)(struct rq *this_rq, struct task_struct *task, int oldprio);
+	void (*update_curr)(struct rq *rq);
+	int uclamp_enabled;
+};
+
+/* 6.12 BPF pieces. */
+#define __bpf_kfunc			__used noinline
+#define __bpf_kfunc_start_defs()						\
+	__diag_push();								\
+	__diag_ignore_all("-Wmissing-prototypes", "kfuncs are called from BPF only")
+#define __bpf_kfunc_end_defs()		__diag_pop()
+#define BTF_KFUNCS_START(name)		BTF_SET8_START(name)
+#define BTF_KFUNCS_END(name)		BTF_SET8_END(name)
+/* Flags this verifier does not know. A kfunc that takes a task gets it from
+ * the callback's arguments, which 6.1 does not count as trusted, so that
+ * requirement goes too.
+ */
+#define KF_RCU			0
+#define KF_ITER_NEW		0
+#define KF_ITER_NEXT		0
+#define KF_ITER_DESTROY		0
+#define KF_RCU_PROTECTED		0
+/* See the kmalloc_node() change in scripts/gen-scx61.py. */
+#undef KF_SLEEPABLE
+#define KF_SLEEPABLE		0
+#undef KF_TRUSTED_ARGS
+#define KF_TRUSTED_ARGS		0
+#define PTR_TRUSTED		0
+
+#define bpf_struct_ops_desc	bpf_struct_ops
+#define bpf_base_func_proto(func_id, prog) bpf_base_func_proto(func_id)
+
+struct bpf_link;
+struct scx61_struct_ops;
+int scx61_register_struct_ops(struct scx61_struct_ops *st);
+struct scx61_struct_ops {
+	const struct bpf_verifier_ops *verifier_ops;
+	int (*init)(struct btf *btf);
+	int (*check_member)(const struct btf_type *t, const struct btf_member *member,
+			    const struct bpf_prog *prog);
+	int (*init_member)(const struct btf_type *t, const struct btf_member *member,
+			   void *kdata, const void *udata);
+	int (*reg)(void *kdata, struct bpf_link *link);
+	void (*unreg)(void *kdata, struct bpf_link *link);
+	int (*update)(void *kdata, void *old_kdata, struct bpf_link *link);
+	int (*validate)(void *kdata);
+	void *cfi_stubs;
+	struct module *owner;
+	const char *name;
+};
 
 #endif
