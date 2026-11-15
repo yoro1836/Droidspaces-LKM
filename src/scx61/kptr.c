@@ -334,6 +334,46 @@ static struct kprobe selem_unlink_kp = {
 	.pre_handler = selem_unlink_pre,
 };
 
+/* bpf_task_storage_get() gives up with NULL when a task storage operation is
+ * already under way on this CPU, as when a wakeup from an interrupt lands in
+ * a task's exit. From v6.2 only tracing programs get that, and schedulers
+ * count on a lookup not failing: scx_bpfland returned the error from
+ * select_cpu() on a Galaxy S24 and was thrown out. In that case the lookup
+ * is done without touching the cache, which the core does itself without its
+ * guard; creating storage still fails, as only init_task() does that.
+ */
+static int __percpu *task_storage_busy;
+static struct bpf_local_storage_data *(*storage_lookup_fn)(struct bpf_local_storage *,
+							   struct bpf_local_storage_map *, bool);
+
+static __nocfi u64 scx61_task_storage_get_busy(struct bpf_map *map, struct task_struct *task,
+					       void *value, u64 flags, gfp_t gfp)
+{
+	struct bpf_local_storage *storage;
+	struct bpf_local_storage_data *sdata;
+
+	if (!task || (flags & ~BPF_LOCAL_STORAGE_GET_F_CREATE))
+		return 0;
+	storage = rcu_dereference_check(task->bpf_storage, bpf_rcu_lock_held());
+	if (!storage)
+		return 0;
+	sdata = storage_lookup_fn(storage, (struct bpf_local_storage_map *)map, false);
+	return sdata ? (u64)sdata->data : 0;
+}
+
+static int task_storage_get_pre(struct kprobe *kp, struct pt_regs *regs)
+{
+	if (!this_cpu_read(*task_storage_busy))
+		return 0;
+	instruction_pointer_set(regs, (unsigned long)scx61_task_storage_get_busy);
+	return 1;
+}
+
+static struct kprobe task_storage_get_kp = {
+	.symbol_name = "bpf_task_storage_get",
+	.pre_handler = task_storage_get_pre,
+};
+
 /* The verifier gives up after a million instructions walked. A v6.4 one
  * walks a bpf_for() once, as an iterator; this one walks every round, so a
  * scheduler that is small upstream runs out here (scx_lavd's dispatch does).
@@ -489,6 +529,10 @@ int __init scx61_kptr_init(void)
 	if (!find_btf_id_fn || !find_dtor_kfunc_fn || !try_get_module_fn || !lookup_name_fn)
 		return -ENOENT;
 
+	task_storage_busy = (void *)kallsyms_name_to_addr("bpf_task_storage_busy");
+	storage_lookup_fn = (void *)kallsyms_name_to_addr("bpf_local_storage_lookup");
+	if (!task_storage_busy || !storage_lookup_fn || register_kprobe(&task_storage_get_kp))
+		pr_warn("droidspaces_scx: task storage lookups can fail under load\n");
 	/* Small schedulers verify without it. */
 	if (register_kprobe(&states_equal_kp))
 		pr_warn("droidspaces_scx: no larger verifier budget, large schedulers will not load\n");
