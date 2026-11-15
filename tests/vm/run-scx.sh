@@ -36,7 +36,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
-grep -E "^(SCX|attaches=|DS_SCX|libbpf)" "$log" || true
+grep -E "^(SCX|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
 if ! grep -q "^DS_SCX_VM_RESULT=0" "$log" ||
    grep -Eq "WARNING: CPU:|BUG:|Oops:|Kernel panic|bad: scheduling|Unable to handle|rcu.*stall" "$log"; then
     tail -80 "$log"; exit 1

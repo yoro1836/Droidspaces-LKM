@@ -73,14 +73,10 @@ static struct sched_ext_ops __rcu *scx_ops;
 static unsigned long nr_ops_calls;
 module_param(nr_ops_calls, ulong, 0400);
 
-/* A BPF trampoline carries no kCFI type word. */
-static __nocfi s32 call_select_cpu(struct sched_ext_ops *ops, struct task_struct *p,
-				   s32 prev_cpu, u64 wake_flags)
-{
-	return ops->select_cpu(p, prev_cpu, wake_flags);
-}
-
-s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
+/* A BPF trampoline carries no kCFI type word, so every call into the
+ * scheduler is made from a function that skips the check.
+ */
+__nocfi s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
 {
 	struct sched_ext_ops *ops;
 	s32 cpu = -1;
@@ -88,7 +84,7 @@ s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
 	rcu_read_lock();
 	ops = rcu_dereference(scx_ops);
 	if (ops && ops->select_cpu) {
-		cpu = call_select_cpu(ops, p, prev_cpu, wake_flags);
+		cpu = ops->select_cpu(p, prev_cpu, wake_flags);
 		nr_ops_calls++;
 		if (cpu < 0 || cpu >= nr_cpu_ids || !cpu_active(cpu) ||
 		    !cpumask_test_cpu(cpu, p->cpus_ptr))
@@ -98,24 +94,55 @@ s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
 	return cpu;
 }
 
-__diag_push();
-__diag_ignore_all("-Wmissing-prototypes", "kfuncs are called from BPF only");
-noinline u32 scx_bpf_nr_cpu_ids(void)
+__nocfi bool scx_ops_enqueue(struct task_struct *p, u64 enq_flags)
 {
-	return nr_cpu_ids;
+	struct sched_ext_ops *ops;
+	bool has;
+
+	rcu_read_lock();
+	ops = rcu_dereference(scx_ops);
+	has = ops && ops->enqueue;
+	if (has)
+		ops->enqueue(p, enq_flags);
+	rcu_read_unlock();
+	return has;
 }
-__diag_pop();
 
-BTF_SET8_START(scx_kfunc_ids)
-BTF_ID_FLAGS(func, scx_bpf_nr_cpu_ids)
-BTF_SET8_END(scx_kfunc_ids)
+__nocfi bool scx_ops_dispatch(s32 cpu)
+{
+	struct sched_ext_ops *ops;
+	bool has;
 
-/* No owner: the loader resolves kfuncs against the merged BTF, where they
- * look like vmlinux's, so the verifier searches the vmlinux sets.
- */
-static const struct btf_kfunc_id_set scx_kfunc_set = {
-	.set = &scx_kfunc_ids,
-};
+	rcu_read_lock();
+	ops = rcu_dereference(scx_ops);
+	has = ops && ops->dispatch;
+	if (has)
+		ops->dispatch(cpu, NULL);
+	rcu_read_unlock();
+	return has;
+}
+
+__nocfi void scx_ops_running(struct task_struct *p)
+{
+	struct sched_ext_ops *ops;
+
+	rcu_read_lock();
+	ops = rcu_dereference(scx_ops);
+	if (ops && ops->running)
+		ops->running(p);
+	rcu_read_unlock();
+}
+
+__nocfi void scx_ops_stopping(struct task_struct *p, bool runnable)
+{
+	struct sched_ext_ops *ops;
+
+	rcu_read_lock();
+	ops = rcu_dereference(scx_ops);
+	if (ops && ops->stopping)
+		ops->stopping(p, runnable);
+	rcu_read_unlock();
+}
 
 static bool (*btf_ctx_access_fn)(int, int, enum bpf_access_type, const struct bpf_prog *,
 				 struct bpf_insn_access_aux *);
@@ -160,12 +187,27 @@ static int scx_init_member(const struct btf_type *t, const struct btf_member *me
 	return 0;
 }
 
-static int scx_reg(void *kdata)
+static DEFINE_MUTEX(scx_reg_lock);
+
+static __nocfi int scx_reg(void *kdata)
 {
 	struct sched_ext_ops *ops = kdata;
+	int ret = 0;
 
-	if (cmpxchg((struct sched_ext_ops **)&scx_ops, NULL, ops))
-		return -EBUSY;
+	mutex_lock(&scx_reg_lock);
+	if (rcu_access_pointer(scx_ops))
+		ret = -EBUSY;
+	else if (ops->init)
+		ret = ops->init();
+	if (ret) {
+		/* init may have made queues before it failed */
+		if (ret != -EBUSY)
+			scx_ops_gone();
+		mutex_unlock(&scx_reg_lock);
+		return ret > 0 ? -EINVAL : ret;
+	}
+	rcu_assign_pointer(scx_ops, ops);
+	mutex_unlock(&scx_reg_lock);
 	pr_info("BPF scheduler \"%s\" enabled\n", ops->name);
 	return 0;
 }
@@ -174,8 +216,11 @@ static void scx_unreg(void *kdata)
 {
 	struct sched_ext_ops *ops = kdata;
 
+	mutex_lock(&scx_reg_lock);
 	rcu_assign_pointer(scx_ops, NULL);
 	synchronize_rcu();
+	scx_ops_gone();
+	mutex_unlock(&scx_reg_lock);
 	pr_info("BPF scheduler \"%s\" disabled\n", ops->name);
 }
 
@@ -343,7 +388,7 @@ int scx_bpf_init(void)
 	ret = take_struct_ops_slot();
 	if (ret)
 		return ret;
-	ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS, &scx_kfunc_set);
+	ret = scx_register_kfuncs();
 	if (ret)
 		return ret;
 	ret = sysfs_create_bin_file(&THIS_MODULE->mkobj.kobj, &merged_attr);

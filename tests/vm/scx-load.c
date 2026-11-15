@@ -80,13 +80,15 @@ int main(int argc, char **argv)
 		fflush(stdout);
 		sleep(seconds);
 		bpf_object__for_each_map(map, obj) {
-			unsigned long vals[2] = { 0 };
+			unsigned long v[6] = { 0 };
 			int key = 0;
 
 			if (!strstr(bpf_map__name(map), ".bss"))
 				continue;
-			if (!bpf_map_lookup_elem(bpf_map__fd(map), &key, vals))
-				printf("SCX-BPF nr_calls=%lu nr_cpus=%lu\n", vals[0], vals[1] & 0xffffffff);
+			if (!bpf_map_lookup_elem(bpf_map__fd(map), &key, v))
+				printf("SCX-BPF local=%lu queued=%lu dispatch=%lu consumed=%lu "
+				       "running=%lu stopping=%lu\n",
+				       v[0], v[1], v[2], v[3], v[4], v[5]);
 		}
 		bpf_link__destroy(link);
 		printf("SCX-BPF detach: PASS\n");
