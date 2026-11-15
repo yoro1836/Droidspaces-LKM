@@ -412,31 +412,31 @@ static void scx61_rvh_before_yield(void *unused, long *skip)
 }
 
 /* A nice change ends in the class's prio_changed, which for the idle slot is
- * a bare BUG(). Do the change here as set_user_nice() does it and hand the
- * core a request for the value the task now has, which makes it return early.
+ * a bare BUG(). This hook runs with the rq locked, right before the core
+ * returns early when the nice value is unchanged, so the change is done here
+ * as set_user_nice() does it and the core is told nothing is left to do.
+ * The unlocked hook is no use for this: another module's handler can set its
+ * "allowed" and the core then goes on regardless, which is how binder took a
+ * Galaxy S24 down.
  */
-static void scx61_rvh_set_user_nice(void *unused, struct task_struct *p, long *nice, bool *allowed)
+static void scx61_rvh_set_user_nice_locked(void *unused, struct task_struct *p, long *nice)
 {
-	struct rq_flags rf;
-	struct rq *rq;
+	struct rq *rq = task_rq(p);
 	int prio;
 
-	if (!task_is_scx(p) || *nice < MIN_NICE || *nice > MAX_NICE)
-		return;
-	rq = task_rq_lock(p, &rf);
-	if (task_is_scx(p) && task_nice(p) != *nice) {
-		update_rq_clock(rq);
-		p->static_prio = NICE_TO_PRIO(*nice);
-		prio = p->static_prio - MAX_RT_PRIO;
-		p->se.load.weight = scale_load(sched_prio_to_weight[prio]);
-		p->se.load.inv_weight = sched_prio_to_wmult[prio];
-		p->normal_prio = p->static_prio;
-		if (!rt_prio(p->prio))
-			p->prio = p->normal_prio;
-		reweight_task_scx(rq, p, &p->se.load);
-	}
-	task_rq_unlock(rq, p, &rf);
-	*nice = task_nice(p);
+	if (!task_is_scx(p) || *nice < MIN_NICE || *nice > MAX_NICE || task_nice(p) == *nice)
+		goto out;
+	p->static_prio = NICE_TO_PRIO(*nice);
+	prio = p->static_prio - MAX_RT_PRIO;
+	p->se.load.weight = scale_load(sched_prio_to_weight[prio]);
+	p->se.load.inv_weight = sched_prio_to_wmult[prio];
+	p->normal_prio = p->static_prio;
+	if (!rt_prio(p->prio))
+		p->prio = p->normal_prio;
+	reweight_task_scx(rq, p, &p->se.load);
+out:
+	if (task_is_scx(p))
+		*nice = task_nice(p);
 }
 
 /* set_cpus_allowed_common() serves every class and the idle slot has it as
@@ -725,7 +725,7 @@ int __init scx61_glue_init(void)
 	      register_trace_android_rvh_schedule(scx61_rvh_schedule, NULL) ?:
 	      register_trace_android_rvh_tick_entry(scx61_rvh_tick_entry, NULL) ?:
 	      register_trace_android_rvh_before_do_sched_yield(scx61_rvh_before_yield, NULL) ?:
-	      register_trace_android_rvh_set_user_nice(scx61_rvh_set_user_nice, NULL) ?:
+	      register_trace_android_rvh_set_user_nice_locked(scx61_rvh_set_user_nice_locked, NULL) ?:
 	      register_trace_android_rvh_set_cpus_allowed_comm(scx61_rvh_set_cpus_allowed, NULL) ?:
 	      register_trace_android_rvh_setscheduler(scx61_rvh_setscheduler, NULL) ?:
 	      register_trace_android_rvh_rtmutex_prepare_setprio(scx61_rvh_rtmutex_setprio, NULL);
