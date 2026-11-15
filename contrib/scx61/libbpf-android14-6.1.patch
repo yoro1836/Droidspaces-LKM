@@ -1,0 +1,63 @@
+diff --git a/src/libbpf.c b/src/libbpf.c
+index 02e75b1..bdba47d 100644
+--- a/src/libbpf.c
++++ b/src/libbpf.c
+@@ -1533,7 +1533,10 @@ static int init_struct_ops_maps(struct bpf_object *obj, const char *sec_name,
+ 		map->def.key_size = sizeof(int);
+ 		map->def.value_size = type->size;
+ 		map->def.max_entries = 1;
+-		map->def.map_flags = strcmp(sec_name, STRUCT_OPS_LINK_SEC) == 0 ? BPF_F_LINK : 0;
++		/* android14-6.1: struct_ops maps attach without a link before
++		 * v6.4, which is what a map without BPF_F_LINK still does.
++		 */
++		map->def.map_flags = 0;
+ 		map->autoattach = true;
+ 
+ 		map->st_ops = calloc(1, sizeof(*map->st_ops));
+@@ -6809,7 +6812,15 @@ bpf_object__relocate_data(struct bpf_object *obj, struct bpf_program *prog)
+ 				}
+ 				insn[1].imm = ext->kcfg.data_off;
+ 			} else /* EXT_KSYM */ {
+-				if (ext->ksym.type_id && ext->is_set) { /* typed ksyms */
++				if (ext->ksym.type_id && ext->is_set &&
++				    btf_is_func(btf__type_by_id(obj->btf, ext->btf_id))) {
++					/* android14-6.1: ld_imm64 cannot name a kfunc
++					 * before v6.4, and the address only ever serves
++					 * bpf_ksym_exists(), so any non-zero value does.
++					 */
++					insn[0].imm = 1;
++					insn[1].imm = 0;
++				} else if (ext->ksym.type_id && ext->is_set) { /* typed ksyms */
+ 					insn[0].src_reg = BPF_PSEUDO_BTF_ID;
+ 					insn[0].imm = ext->ksym.kernel_btf_id;
+ 					insn[1].imm = ext->ksym.kernel_btf_obj_fd;
+@@ -8571,6 +8582,11 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+ 	}
+ 	load_attr.log_level = log_level;
+ 	load_attr.prog_flags = prog->prog_flags;
++	/* android14-6.1: struct_ops programs cannot be sleepable before v6.3.
++	 * The kfuncs a sched_ext init() calls do not sleep on that kernel.
++	 */
++	if (prog->type == BPF_PROG_TYPE_STRUCT_OPS)
++		load_attr.prog_flags &= ~BPF_F_SLEEPABLE;
+ 	load_attr.fd_array = obj->fd_array;
+ 	err = bpf_object__bind_arena(obj, prog, &load_attr);
+ 	if (err)
+@@ -8583,6 +8599,17 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+ 	/* adjust load_attr if sec_def provides custom preload callback */
+ 	if (prog->sec_def && prog->sec_def->prog_prepare_load_fn) {
+ 		err = prog->sec_def->prog_prepare_load_fn(prog, &load_attr, prog->sec_def->cookie);
++		if (err == -ESRCH && prog->type == BPF_PROG_TYPE_TRACING) {
++			/* android14-6.1: fentry cannot attach on arm64 without
++			 * ftrace, and the function a newer scheduler probes
++			 * may not exist. Such a probe is left out, which the
++			 * skeleton's attach step then skips as well.
++			 */
++			pr_warn("prog '%s': attach target not in this kernel, not loaded\n",
++				prog->name);
++			prog->load_strategy = BPF_PROG_LOAD_STRATEGY_DISABLED;
++			return 0;
++		}
+ 		if (err < 0) {
+ 			pr_warn("prog '%s': failed to prepare load attributes: %s\n",
+ 				prog->name, errstr(err));

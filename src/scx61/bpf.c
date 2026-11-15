@@ -515,12 +515,36 @@ static __nocfi int take_struct_ops_slot(void)
 	return 0;
 }
 
+/* Upstream's loader reads /sys/kernel/sched_ext/hotplug_seq before it loads a
+ * scheduler and gives up without it. CPUs coming and going are not tracked
+ * here, so the sequence stays 0.
+ */
+static ssize_t hotplug_seq_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "0\n");
+}
+
+static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", rcu_access_pointer(scx_ops) ? "enabled" : "disabled");
+}
+
+static struct kobj_attribute hotplug_seq_attr = __ATTR_RO(hotplug_seq);
+static struct kobj_attribute state_attr = __ATTR_RO(state);
+static struct attribute *scx_sysfs_attrs[] = { &hotplug_seq_attr.attr, &state_attr.attr, NULL };
+static const struct attribute_group scx_sysfs_group = { .attrs = scx_sysfs_attrs };
+
 int scx_bpf_init(void)
 {
+	struct kobject *kobj;
 	int ret;
 
 	BTF_TYPE_EMIT(struct bpf_struct_ops_sched_ext_ops);
 	BTF_TYPE_EMIT(struct scx_btf_anchor);
+	BTF_TYPE_EMIT_ENUM(SCX_OPS_NAME_LEN);
+	BTF_TYPE_EMIT_ENUM(SCX_DSQ_LOCAL);
+	BTF_TYPE_EMIT_ENUM(SCX_ENQ_WAKEUP);
+	BTF_TYPE_EMIT_ENUM(SCX_KICK_IDLE);
 	btf_ctx_access_fn = (void *)kallsyms_name_to_addr("btf_ctx_access");
 	btf_struct_access_fn = (void *)kallsyms_name_to_addr("btf_struct_access");
 	base_func_proto_fn = (void *)kallsyms_name_to_addr("bpf_base_func_proto");
@@ -541,6 +565,9 @@ int scx_bpf_init(void)
 	ret = sysfs_create_bin_file(&THIS_MODULE->mkobj.kobj, &merged_attr);
 	if (ret)
 		return ret;
+	kobj = kobject_create_and_add("sched_ext", kernel_kobj);
+	if (!kobj || sysfs_create_group(kobj, &scx_sysfs_group))
+		pr_warn("no /sys/kernel/sched_ext, upstream loaders will refuse to start\n");
 	pr_info("struct_ops type sched_ext_ops registered, %u types grafted\n",
 		mod_btf->nr_types);
 	return 0;

@@ -23,6 +23,9 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
         -c /work/tests/vm/scx-sched.bpf.c -o /tmp/root/scx-sched.bpf.o
     aarch64-linux-gnu-gcc -static -O2 -Wall /work/tests/vm/scx-load.c -o /tmp/root/scx-load \
         -lbpf -lelf -lz -lzstd
+    aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror /work/contrib/scx61/scx-run.c -o /tmp/root/scx-run
+    # Upstream scx_simple, when contrib/scx61/build-upstream.sh has built it.
+    if [ -x /work/out/scx/upstream/scx_simple ]; then cp /work/out/scx/upstream/scx_simple /tmp/root/; fi
     cp "$MODULE" /tmp/root/scx.ko
     cp /work/tests/vm/scx-init /tmp/root/init
     chmod +x /tmp/root/init
@@ -36,7 +39,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
-grep -E "^(SCX|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
+grep -aE "^(SCX|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
 if ! grep -q "^DS_SCX_VM_RESULT=0" "$log" ||
    grep -Eq "WARNING: CPU:|BUG:|Oops:|Kernel panic|bad: scheduling|Unable to handle|rcu.*stall" "$log"; then
     tail -80 "$log"; exit 1

@@ -62,6 +62,28 @@ echo "kfunc_errors=$(cat $P/nr_kfunc_errors)"
 [ "$(cat $P/nr_kfunc_errors)" = 0 ] || result=1
 kill $bpids
 sleep 1
+# Upstream's own scx_simple, source and loader unmodified.
+if [ -x /scx_simple ]; then
+    /scx-run /scx_simple > /simple.log 2>&1 & simple=$!
+    sleep 6
+    upids=
+    for i in 1 2 3; do sh -c 'while :; do :; done' & upids="$upids $!"; done
+    for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & upids="$upids $!"; done
+    for p in $upids; do echo $p > $P/attach || result=1; done
+    sleep 2
+    for p in $upids; do eval "t$p=$(runs $p)"; done
+    sleep 5
+    starved=0
+    for p in $upids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+    grep -q enabled /sys/kernel/sched_ext/state && echo "SCX-UP loaded: PASS" || { echo "SCX-UP loaded: FAIL"; result=1; }
+    kill -INT $simple
+    wait $simple
+    tail -12 /simple.log | sed "s/^/SCX-UP| /"
+    [ "$starved" = 0 ] && echo "SCX-UP every task ran: PASS" || { echo "SCX-UP every task ran: FAIL ($starved starved)"; result=1; }
+    grep -Eq "global=[1-9][0-9]+" /simple.log && echo "SCX-UP queue in use: PASS" || { echo "SCX-UP queue in use: FAIL"; result=1; }
+    kill $upids
+    sleep 1
+fi
 echo "attaches=$(cat $P/nr_attaches) picks=$(cat $P/nr_picks) enqueues=$(cat $P/nr_enqueues) pulls=$(cat $P/nr_pulls) fallbacks=$(cat $P/nr_fallbacks)"
 [ "$(cat $P/nr_picks)" -gt 1000 ] || result=1
 dmesg | grep -E 'droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall'

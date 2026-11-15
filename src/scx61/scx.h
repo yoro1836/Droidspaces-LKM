@@ -6,17 +6,39 @@
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 
-/* Values as in upstream's include/linux/sched/ext.h, so scheduler sources
- * that name them build unchanged.
+/* Names and values as in upstream's include/linux/sched/ext.h and
+ * kernel/sched/ext.c. They are enums rather than macros because upstream's
+ * loader reads them out of the kernel's BTF by name at run time.
  */
-#define SCX_DSQ_FLAG_BUILTIN	(1LLU << 63)
-#define SCX_DSQ_FLAG_LOCAL_ON	(1LLU << 62)
-#define SCX_DSQ_INVALID		(SCX_DSQ_FLAG_BUILTIN | 0)
-#define SCX_DSQ_GLOBAL		(SCX_DSQ_FLAG_BUILTIN | 1)
-#define SCX_DSQ_LOCAL		(SCX_DSQ_FLAG_BUILTIN | 2)
-#define SCX_DSQ_LOCAL_ON	(SCX_DSQ_FLAG_BUILTIN | SCX_DSQ_FLAG_LOCAL_ON)
-#define SCX_SLICE_DFL		(20 * NSEC_PER_MSEC)
-#define SCX_ENQ_HEAD		(1LLU << 4)
+enum scx_public_consts {
+	SCX_OPS_NAME_LEN	= 128,
+	SCX_SLICE_DFL		= 20 * 1000000,	/* 20ms */
+	SCX_SLICE_INF		= U64_MAX,
+};
+
+enum scx_dsq_id_flags {
+	SCX_DSQ_FLAG_BUILTIN	= 1LLU << 63,
+	SCX_DSQ_FLAG_LOCAL_ON	= 1LLU << 62,
+	SCX_DSQ_INVALID		= SCX_DSQ_FLAG_BUILTIN | 0,
+	SCX_DSQ_GLOBAL		= SCX_DSQ_FLAG_BUILTIN | 1,
+	SCX_DSQ_LOCAL		= SCX_DSQ_FLAG_BUILTIN | 2,
+	SCX_DSQ_LOCAL_ON	= SCX_DSQ_FLAG_BUILTIN | SCX_DSQ_FLAG_LOCAL_ON,
+	SCX_DSQ_LOCAL_CPU_MASK	= 0xffffffffLLU,
+};
+
+enum scx_enq_flags {
+	SCX_ENQ_WAKEUP		= 1LLU << 0,
+	SCX_ENQ_HEAD		= 1LLU << 4,
+	SCX_ENQ_PREEMPT		= 1LLU << 32,
+	SCX_ENQ_REENQ		= 1LLU << 40,
+	SCX_ENQ_LAST		= 1LLU << 41,
+};
+
+enum scx_kick_flags {
+	SCX_KICK_IDLE		= 1LLU << 0,
+	SCX_KICK_PREEMPT	= 1LLU << 1,
+	SCX_KICK_WAIT		= 1LLU << 2,
+};
 
 struct scx_dsq {
 	raw_spinlock_t lock;
