@@ -15,7 +15,6 @@
 #include <linux/cpufreq.h>
 #include <linux/pm_qos.h>
 #include <linux/cpuhotplug.h>
-#include <linux/set_memory.h>
 #include <linux/pgtable.h>
 #include "port.h"
 
@@ -693,28 +692,20 @@ static bool scx61_kernel_exec(unsigned long a)
 	return pte_valid(pte) && !(pte_val(pte) & PTE_PXN);
 }
 
-/* A Galaxy S24 went down calling ops.init() of the second scheduler it ran:
- * the struct_ops trampoline page, which the BPF core makes executable just
- * before reg(), was not. Why is not known yet, so every callback is checked
- * here, made executable once more if it is not, and the scheduler is refused
- * if that does not help, rather than jumped into.
+/* A Galaxy S24 went down calling a callback whose struct_ops trampoline page
+ * was not executable. The cause is not known, so a scheduler whose callbacks
+ * are not executable at reg() is refused rather than jumped into.
  */
 static int scx61_check_callbacks(const struct sched_ext_ops *ops)
 {
 	void *const *fn = (void *const *)ops;
 	unsigned int i, n = offsetof(struct sched_ext_ops, dispatch_max_batch) / sizeof(*fn);
-	unsigned long a;
-	int ret;
 
 	for (i = 0; i < n; i++) {
-		a = (unsigned long)fn[i];
-		if (!a || scx61_kernel_exec(a))
-			continue;
-		ret = set_memory_x(a & PAGE_MASK, 1);
-		pr_err("sched_ext: callback %u at %px is not executable, set_memory_x: %d, now %s\n",
-		       i, fn[i], ret, scx61_kernel_exec(a) ? "executable" : "still not");
-		if (!scx61_kernel_exec(a))
+		if (fn[i] && !scx61_kernel_exec((unsigned long)fn[i])) {
+			pr_err("sched_ext: callback %u at %px is not executable, refusing\n", i, fn[i]);
 			return -EFAULT;
+		}
 	}
 	return 0;
 }
