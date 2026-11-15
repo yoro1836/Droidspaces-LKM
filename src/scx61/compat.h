@@ -61,15 +61,21 @@ static inline struct rq *scx_rq_owner(struct scx_rq *srq)
 	return container_of(srq, struct ds_scx_rq, scx)->rq;
 }
 
-/* task_struct has no scx member: the entity is laid over p->dl, which only a
- * deadline task uses. Leaving the class puts p->dl back as fork made it.
+/* task_struct has no scx member. Upstream keeps one for every task of every
+ * class at all times, so it cannot borrow a field some class uses. It goes
+ * at the end of the vendor data Android reserves in task_struct for modules
+ * like this one: 64 words that fork clears. Samsung's EMS uses the first 35.
+ * The module refuses to load if any task has something in our 24.
  */
-#define SCX_ENT_OFFSET offsetof(struct task_struct, dl)
+#define SCX_ENT_WORDS	(sizeof(struct sched_ext_entity) / sizeof(u64))
+#define SCX_ENT_FIRST	(ARRAY_SIZE(((struct task_struct *)0)->android_vendor_data1) - SCX_ENT_WORDS)
+#define SCX_ENT_OFFSET	(offsetof(struct task_struct, android_vendor_data1) + SCX_ENT_FIRST * sizeof(u64))
 
 static inline struct sched_ext_entity *scx_ent(const struct task_struct *p)
 {
-	BUILD_BUG_ON(sizeof(struct sched_ext_entity) > sizeof(struct sched_dl_entity));
-	return (struct sched_ext_entity *)&p->dl;
+	BUILD_BUG_ON(sizeof(struct sched_ext_entity) % sizeof(u64));
+	BUILD_BUG_ON(sizeof(struct sched_ext_entity) > 28 * sizeof(u64));
+	return (struct sched_ext_entity *)((void *)p + SCX_ENT_OFFSET);
 }
 
 static inline struct task_struct *scx_task_of(struct sched_ext_entity *ent)

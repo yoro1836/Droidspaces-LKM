@@ -119,9 +119,11 @@ ifneq ($(GKI_ANDROID),)
 ccflags-y += -DDS_GKI_ANDROID='"$(GKI_ANDROID)"' -DDS_GKI_VERSION='"$(GKI_VERSION)"'
 endif
 ccflags-y += -I$(srctree)
-# The port of upstream ext.c, while it does not build yet: SCX_PORT=1 adds it.
+# SCX_PORT=1 builds upstream's ext.c with its 6.1 glue instead of the class
+# written by hand, which stays the default until the port passes its tests.
 ifeq ($(SCX_PORT),1)
-droidspaces_scx-y += $(SCX_DIR)/ext-port.o
+droidspaces_scx-y := $(SCX_DIR)/port-main.o $(SCX_DIR)/ext-port.o $(SCX_DIR)/port-btf.o \
+	$(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
 endif
 else
 obj-m := droidspaces_probe.o

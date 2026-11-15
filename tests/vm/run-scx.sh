@@ -14,7 +14,7 @@ docker ps >/dev/null
 docker run --rm --platform linux/amd64 -v "$root:/work" \
     -e KERNEL="${DS_SCX_KERNEL:-/work/out/gki/android14-6.1/Image}" \
     -e MODULE="${DS_SCX_MODULE:-/work/out/gki/android14-6.1-scx/droidspaces_scx.ko}" \
-    -e LOG="/work/$log_dir/console.log" \
+    -e LOG="/work/$log_dir/console.log" -e INIT="${DS_SCX_INIT:-scx-init}" \
     droidspaces-lkm-vm-cross:local sh -eu -c '
     test -r "$KERNEL" && test -r "$MODULE"
     mkdir -p /tmp/root/bin /tmp/root/dev /tmp/root/proc /tmp/root/sys
@@ -30,7 +30,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     # Upstream scx_simple, when contrib/scx61/build-upstream.sh has built it.
     if [ -x /work/out/scx/upstream/scx_simple ]; then cp /work/out/scx/upstream/scx_simple /tmp/root/; fi
     cp "$MODULE" /tmp/root/scx.ko
-    cp /work/tests/vm/scx-init /tmp/root/init
+    cp "/work/tests/vm/${INIT:-scx-init}" /tmp/root/init
     chmod +x /tmp/root/init
     mknod /tmp/root/dev/console c 5 1
     mknod /tmp/root/dev/null c 1 3
@@ -42,7 +42,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
-grep -aE "^(SCX|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
+grep -aE "^(SCX|PORT|state=|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
 if ! grep -q "^DS_SCX_VM_RESULT=0" "$log" ||
    grep -Eq "WARNING: CPU:|BUG:|Oops:|Kernel panic|bad: scheduling|Unable to handle|rcu.*stall" "$log"; then
     tail -80 "$log"; exit 1

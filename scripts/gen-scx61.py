@@ -40,6 +40,11 @@ def convert(text):
     # comparison of class pointers.
     text = re.sub(r'(%s)->sched_class == &ext_sched_class' % EXPR, r'task_is_scx(\1)', text)
     text = re.sub(r'(%s)->sched_class != &ext_sched_class' % EXPR, r'!task_is_scx(\1)', text)
+    # upstream tells the idle tasks by their class, which ours share.
+    text, n = re.subn(r'(%s)->sched_class != &idle_sched_class' % EXPR, r'!scx_above_task(\1)', text)
+    text, m = re.subn(r'(%s)->sched_class == &idle_sched_class' % EXPR, r'scx_above_task(\1)', text)
+    if text.count('idle_sched_class') and (n, m) != (1, 1):
+        sys.exit('gen-scx61: idle class comparisons matched %d and %d times, expected 1 and 1' % (n, m))
     # Below ext sits only the real idle task.
     text = re.sub(r'sched_class_above\(&ext_sched_class, (%s)->sched_class\)' % EXPR, r'scx_above_task(\1)', text)
     text = text.replace('sched_class_above(&ext_sched_class, next_class)', 'scx_above_task(next)')

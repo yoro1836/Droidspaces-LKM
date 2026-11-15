@@ -1,0 +1,43 @@
+#!/bin/sh
+# Init of the test VM for the port of upstream ext.c: load it, run upstream's
+# scx_simple on it with a workload, unload, and look for complaints.
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+result=0
+/load-module /scx.ko || { echo DS_SCX_LOAD_FAIL; dmesg | tail -20; poweroff -f; }
+runs() { n=0; for v in $(grep ctxt_switches /proc/$1/status | cut -f2); do n=$((n + v)); done; echo $n; }
+echo "state=$(cat /sys/kernel/sched_ext/state 2>&1)"
+
+/scx-run /scx_simple > /simple.log 2>&1 & simple=$!
+sleep 8
+grep -q enabled /sys/kernel/sched_ext/state && echo "PORT loaded: PASS" || { echo "PORT loaded: FAIL"; result=1; }
+pids=
+for i in 1 2 3; do sh -c 'while :; do :; done' & pids="$pids $!"; done
+for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & pids="$pids $!"; done
+sleep 2
+for p in $pids; do eval "t$p=$(runs $p)"; done
+sleep 5
+starved=0
+for p in $pids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+[ "$starved" = 0 ] && echo "PORT every task ran: PASS" || { echo "PORT every task ran: FAIL ($starved starved)"; result=1; }
+i=0; while [ $i -lt 300 ]; do echo $i | cat | grep -q . ; i=$((i + 1)); done
+echo "PORT fork and pipe burst: PASS"
+renice 5 $pids >/dev/null 2>&1; taskset -p 1 $(echo $pids | cut -d' ' -f1) >/dev/null 2>&1
+sleep 2
+echo "PORT nice and affinity: PASS"
+kill -INT $simple
+wait $simple
+tail -8 /simple.log | sed "s/^/PORT| /"
+grep -Eq "global=[1-9][0-9]+" /simple.log && echo "PORT queue in use: PASS" || { echo "PORT queue in use: FAIL"; result=1; }
+grep -q disabled /sys/kernel/sched_ext/state && echo "PORT unloaded: PASS" || { echo "PORT unloaded: FAIL"; result=1; }
+for p in $pids; do eval "t$p=$(runs $p)"; done
+sleep 3
+starved=0
+for p in $pids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+[ "$starved" = 0 ] && echo "PORT tasks carry on as fair: PASS" || { echo "PORT tasks carry on as fair: FAIL ($starved starved)"; result=1; }
+kill $pids
+sleep 1
+dmesg | grep -E 'sched_ext|droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall' | tail -30
+echo "DS_SCX_VM_RESULT=$result"
+poweroff -f

@@ -1,5 +1,5 @@
 diff --git a/src/libbpf.c b/src/libbpf.c
-index 02e75b1..431811e 100644
+index 02e75b1..8e02a01 100644
 --- a/src/libbpf.c
 +++ b/src/libbpf.c
 @@ -1533,7 +1533,10 @@ static int init_struct_ops_maps(struct bpf_object *obj, const char *sec_name,
@@ -59,21 +59,24 @@ index 02e75b1..431811e 100644
  	load_attr.fd_array = obj->fd_array;
  	err = bpf_object__bind_arena(obj, prog, &load_attr);
  	if (err)
-@@ -8583,6 +8608,17 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+@@ -8580,6 +8605,20 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+ 	if (obj->token_fd)
+ 		load_attr.prog_flags |= BPF_F_TOKEN_FD;
+ 
++	/* android14-6.1: fentry and fexit cannot attach on arm64 without
++	 * ftrace. A probe of that kind, which current sched_ext headers add
++	 * to every scheduler, is left out, and the skeleton's attach step
++	 * then skips it as well.
++	 */
++	if (prog->type == BPF_PROG_TYPE_TRACING &&
++	    (prog->expected_attach_type == BPF_TRACE_FENTRY ||
++	     prog->expected_attach_type == BPF_TRACE_FEXIT ||
++	     prog->expected_attach_type == BPF_MODIFY_RETURN)) {
++		pr_warn("prog '%s': fentry cannot attach on this kernel, not loaded\n", prog->name);
++		prog->load_strategy = BPF_PROG_LOAD_STRATEGY_DISABLED;
++		return 0;
++	}
++
  	/* adjust load_attr if sec_def provides custom preload callback */
  	if (prog->sec_def && prog->sec_def->prog_prepare_load_fn) {
  		err = prog->sec_def->prog_prepare_load_fn(prog, &load_attr, prog->sec_def->cookie);
-+		if (err == -ESRCH && prog->type == BPF_PROG_TYPE_TRACING) {
-+			/* android14-6.1: fentry cannot attach on arm64 without
-+			 * ftrace, and the function a newer scheduler probes
-+			 * may not exist. Such a probe is left out, which the
-+			 * skeleton's attach step then skips as well.
-+			 */
-+			pr_warn("prog '%s': attach target not in this kernel, not loaded\n",
-+				prog->name);
-+			prog->load_strategy = BPF_PROG_LOAD_STRATEGY_DISABLED;
-+			return 0;
-+		}
- 		if (err < 0) {
- 			pr_warn("prog '%s': failed to prepare load attributes: %s\n",
- 				prog->name, errstr(err));

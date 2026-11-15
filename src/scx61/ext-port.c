@@ -18,10 +18,12 @@
 #include "kernel/sched/sched.h"
 #include "compat.h"
 #include "ext-gen.h"
+/* upstream calls into the BPF scheduler through function pointers that hold
+ * BPF trampolines, which carry no kCFI type word. Checking is off for the
+ * calls made from this file; its own functions keep their type words.
+ */
+#pragma clang attribute push(__attribute__((no_sanitize("kcfi"))), apply_to = function)
 #include "ext-gen.c"
 
-/* upstream registers itself from an initcall; a module has one of its own. */
-int __init scx61_core_init(void)
-{
-	return scx_init();
-}
+#include "ext-glue.c"
+#pragma clang attribute pop

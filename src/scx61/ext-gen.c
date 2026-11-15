@@ -1446,7 +1446,7 @@ static struct task_struct *scx_task_iter_next_locked(struct scx_task_iter *iter)
 		 *
 		 * Test for idle_sched_class as only init_tasks are on it.
 		 */
-		if (p->sched_class != &idle_sched_class)
+		if (!scx_above_task(p))
 			break;
 	}
 	if (!p)
@@ -5084,7 +5084,7 @@ static void scx_dump_state(struct scx_exit_info *ei, size_t dump_len)
 		rq_lock_irqsave(rq, &rf);
 
 		idle = list_empty(&scx_rq(rq)->runnable_list) &&
-			rq->curr->sched_class == &idle_sched_class;
+			scx_above_task(rq->curr);
 
 		if (idle && !SCX_HAS_OP(dump_cpu))
 			goto next;
