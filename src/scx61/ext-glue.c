@@ -11,6 +11,10 @@
  */
 #include <trace/hooks/sched.h>
 #include <linux/irq_work.h>
+#include <linux/llist.h>
+#include <linux/cpufreq.h>
+#include <linux/pm_qos.h>
+#include <linux/cpuhotplug.h>
 #include "port.h"
 
 DEFINE_PER_CPU(struct ds_scx_rq, ds_scx_rqs);
@@ -363,6 +367,180 @@ static void scx61_rvh_set_user_nice(void *unused, struct task_struct *p, long *n
 	*nice = task_nice(p);
 }
 
+/* set_cpus_allowed_common() serves every class and the idle slot has it as
+ * its set_cpus_allowed, so upstream's set_cpus_allowed_scx() is never asked.
+ * This hook is at the end of it, with the mask in place.
+ */
+static void scx61_rvh_set_cpus_allowed(void *unused, struct task_struct *p,
+				       const struct cpumask *new_mask)
+{
+	if (task_is_scx(p) && SCX_HAS_OP(set_cpumask))
+		SCX_CALL_OP_TASK(SCX_KF_REST, set_cpumask, p, (struct cpumask *)p->cpus_ptr);
+}
+
+/* sched_setscheduler() and priority inheritance choose a task's class in
+ * core.c, which knows three: a task of ours it touches comes out as rt, dl or
+ * fair, and nothing tells upstream, because the idle slot has no
+ * switched_from. And a task that should come to us, say one going back from
+ * rt to normal while every task is ours, is given to fair.
+ *
+ * Neither can be put right from inside those paths: their closing
+ * check_class_changed() would enter the idle class's switched_to or
+ * prio_changed, which are bare BUG()s that not even a kprobe can sit on. So
+ * the task is looked at again right after: upstream is told of a task that
+ * left, and a fair task that belongs to us is moved the way upstream's
+ * enable path moves one.
+ */
+struct scx61_recon {
+	struct llist_node node;
+	struct task_struct *p;
+};
+static LLIST_HEAD(scx61_recon_list);
+static struct irq_work scx61_recon_irq;
+
+static void scx61_recon_workfn(struct work_struct *work)
+{
+	struct llist_node *list = llist_del_all(&scx61_recon_list);
+	struct scx61_recon *r, *tmp;
+
+	mutex_lock(&scx_ops_enable_mutex);
+	llist_for_each_entry_safe(r, tmp, list, node) {
+		struct task_struct *p = r->p;
+		struct rq_flags rf;
+		struct rq *rq;
+
+		rq = task_rq_lock(p, &rf);
+		if (scx_get_task_state(p) == SCX_TASK_ENABLED && !task_is_scx(p))
+			switched_from_scx(rq, p);
+		if (p->sched_class == &fair_sched_class && task_should_scx(p->policy) &&
+		    scx_ops_enable_state() == SCX_OPS_ENABLED && !(p->flags & PF_EXITING) &&
+		    scx_get_task_state(p) == SCX_TASK_READY) {
+			const struct sched_class *old_class = p->sched_class;
+			struct sched_enq_and_set_ctx ctx;
+
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
+			p->sched_class = &ext_sched_class;
+			check_class_changing(rq, p, old_class);
+			sched_enq_and_set_task(&ctx);
+			check_class_changed(rq, p, old_class, p->prio);
+		}
+		task_rq_unlock(rq, p, &rf);
+		put_task_struct(p);
+		kfree(r);
+	}
+	mutex_unlock(&scx_ops_enable_mutex);
+}
+static DECLARE_WORK(scx61_recon_work, scx61_recon_workfn);
+
+/* The hooks run under the rq lock, where a work item cannot be queued. */
+static void scx61_recon_irqfn(struct irq_work *work)
+{
+	schedule_work(&scx61_recon_work);
+}
+
+static void scx61_reconcile_later(struct task_struct *p)
+{
+	struct scx61_recon *r;
+
+	if (!scx_enabled())
+		return;
+	r = kmalloc(sizeof(*r), GFP_ATOMIC);
+	if (!r)
+		return;
+	r->p = get_task_struct(p);
+	llist_add(&r->node, &scx61_recon_list);
+	irq_work_queue(&scx61_recon_irq);
+}
+
+static void scx61_rvh_setscheduler(void *unused, struct task_struct *p)
+{
+	scx61_reconcile_later(p);
+}
+
+static void scx61_rvh_rtmutex_setprio(void *unused, struct task_struct *p,
+				      struct task_struct *pi_task)
+{
+	scx61_reconcile_later(p);
+}
+
+/* CPU hotplug. 6.12 calls these from sched_cpu_activate() and
+ * sched_cpu_deactivate(); a dynamic hotplug state runs right after the first
+ * and right before the second.
+ */
+static int scx61_cpu_online(unsigned int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+	struct rq_flags rf;
+
+	rq_lock_irqsave(rq, &rf);
+	scx_rq_activate(rq);
+	rq_online_scx(rq);
+	rq_unlock_irqrestore(rq, &rf);
+	return 0;
+}
+
+static int scx61_cpu_offline(unsigned int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+	struct rq_flags rf;
+
+	rq_lock_irqsave(rq, &rf);
+	rq_offline_scx(rq);
+	scx_rq_deactivate(rq);
+	rq_unlock_irqrestore(rq, &rf);
+	return 0;
+}
+
+/* The performance target. upstream's schedutil adds scx_cpuperf_target() to a
+ * CPU's utilization, which with the default target of one means full speed
+ * unless the scheduler asks for less. Here each cpufreq policy gets a floor
+ * instead: the highest target among its CPUs, as a share of its top
+ * frequency. Whatever caps the frequency from above still does.
+ */
+static DEFINE_PER_CPU(struct freq_qos_request, scx61_qos);
+static DEFINE_PER_CPU(bool, scx61_qos_added);
+static struct irq_work scx61_perf_irq;
+
+static void scx61_perf_workfn(struct work_struct *work)
+{
+	int cpu, i;
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
+		struct freq_qos_request *req = &per_cpu(scx61_qos, cpu);
+		u32 target = 0;
+		s32 freq;
+
+		if (!policy)
+			continue;
+		if (policy->cpu == cpu) {
+			if (scx_enabled())
+				for_each_cpu(i, policy->cpus)
+					target = max(target, scx_rq(cpu_rq(i))->cpuperf_target);
+			freq = target ? mult_frac(policy->cpuinfo.max_freq, target, SCX_CPUPERF_ONE)
+				      : FREQ_QOS_MIN_DEFAULT_VALUE;
+			if (per_cpu(scx61_qos_added, cpu))
+				freq_qos_update_request(req, freq);
+			else if (freq_qos_add_request(&policy->constraints, req, FREQ_QOS_MIN, freq) >= 0)
+				per_cpu(scx61_qos_added, cpu) = true;
+		}
+		cpufreq_cpu_put(policy);
+	}
+	cpus_read_unlock();
+}
+static DECLARE_WORK(scx61_perf_work, scx61_perf_workfn);
+
+static void scx61_perf_irqfn(struct irq_work *work)
+{
+	schedule_work(&scx61_perf_work);
+}
+
+void scx61_cpuperf_kick(void)
+{
+	irq_work_queue(&scx61_perf_irq);
+}
+
 /* struct_ops, see port-btf.c. The value type the BPF core wants beside the
  * ops type, and a member named scx for the BTF strings.
  */
@@ -420,12 +598,17 @@ int scx61_st_init_member(const struct btf_type *t, const struct btf_member *memb
 
 int scx61_st_reg(void *kdata)
 {
-	return scx61_st->validate(kdata) ?: scx61_st->reg(kdata, NULL);
+	int ret = scx61_st->validate(kdata) ?: scx61_st->reg(kdata, NULL);
+
+	/* enabling set every CPU's target without announcing it */
+	scx61_cpuperf_kick();
+	return ret;
 }
 
 void scx61_st_unreg(void *kdata)
 {
 	scx61_st->unreg(kdata, NULL);
+	scx61_cpuperf_kick();
 }
 
 int __init scx61_glue_init(void)
@@ -437,6 +620,8 @@ int __init scx61_glue_init(void)
 		per_cpu(ds_scx_rqs, cpu).rq = cpu_rq(cpu);
 		init_irq_work(&per_cpu(scx61_resched, cpu), scx61_resched_fn);
 	}
+	init_irq_work(&scx61_recon_irq, scx61_recon_irqfn);
+	init_irq_work(&scx61_perf_irq, scx61_perf_irqfn);
 	/* Our words of every task must be as fork left them. */
 	rcu_read_lock();
 	for_each_process_thread(g, p) {
@@ -468,8 +653,15 @@ int __init scx61_glue_init(void)
 	      register_trace_android_rvh_schedule(scx61_rvh_schedule, NULL) ?:
 	      register_trace_android_rvh_tick_entry(scx61_rvh_tick_entry, NULL) ?:
 	      register_trace_android_rvh_before_do_sched_yield(scx61_rvh_before_yield, NULL) ?:
-	      register_trace_android_rvh_set_user_nice(scx61_rvh_set_user_nice, NULL);
+	      register_trace_android_rvh_set_user_nice(scx61_rvh_set_user_nice, NULL) ?:
+	      register_trace_android_rvh_set_cpus_allowed_comm(scx61_rvh_set_cpus_allowed, NULL) ?:
+	      register_trace_android_rvh_setscheduler(scx61_rvh_setscheduler, NULL) ?:
+	      register_trace_android_rvh_rtmutex_prepare_setprio(scx61_rvh_rtmutex_setprio, NULL);
 	if (ret)
+		return ret;
+	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "sched_ext:online",
+					scx61_cpu_online, scx61_cpu_offline);
+	if (ret < 0)
 		return ret;
 	percpu_down_write(&scx_fork_rwsem);
 	rcu_read_lock();

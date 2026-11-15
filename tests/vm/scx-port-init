@@ -26,6 +26,12 @@ echo "PORT fork and pipe burst: PASS"
 renice 5 $pids >/dev/null 2>&1; taskset -p 1 $(echo $pids | cut -d' ' -f1) >/dev/null 2>&1
 sleep 2
 echo "PORT nice and affinity: PASS"
+# The core takes a task to rt and hands it back to fair by itself: it must
+# keep running, and the scheduler must not be upset by either.
+first=$(echo $pids | cut -d' ' -f1)
+i=0; while [ $i -lt 20 ]; do chrt -f -p 1 $first; chrt -o -p 0 $first; i=$((i + 1)); done >/dev/null 2>&1
+old=$(runs $first); sleep 2
+[ $(($(runs $first) - old)) -gt 0 ] && grep -q enabled /sys/kernel/sched_ext/state && echo "PORT to rt and back: PASS" || { echo "PORT to rt and back: FAIL"; result=1; }
 kill -INT $simple
 wait $simple
 tail -8 /simple.log | sed "s/^/PORT| /"
@@ -38,6 +44,18 @@ for p in $pids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=
 [ "$starved" = 0 ] && echo "PORT tasks carry on as fair: PASS" || { echo "PORT tasks carry on as fair: FAIL ($starved starved)"; result=1; }
 kill $pids
 sleep 1
+# A CPU going away while a scheduler is loaded: scx_simple does not follow
+# hotplug, so upstream ends it, and everything must be fair again.
+/scx-run /scx_simple > /simple2.log 2>&1 & simple=$!
+sleep 6
+echo 0 > /sys/devices/system/cpu/cpu1/online
+sleep 3
+echo 1 > /sys/devices/system/cpu/cpu1/online
+sleep 2
+kill -INT $simple 2>/dev/null
+wait $simple
+tail -2 /simple2.log | sed "s/^/PORT| /"
+grep -q disabled /sys/kernel/sched_ext/state && [ "$(cat /sys/devices/system/cpu/online)" = 0-1 ] && echo "PORT cpu hotplug: PASS" || { echo "PORT cpu hotplug: FAIL"; result=1; }
 dmesg | grep -E 'sched_ext|droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall' | tail -30
 echo "DS_SCX_VM_RESULT=$result"
 poweroff -f

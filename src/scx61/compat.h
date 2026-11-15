@@ -230,6 +230,13 @@ struct scx61_class {
 	int uclamp_enabled;
 };
 
+/* 6.12's schedutil reads the performance target a scheduler sets. No 6.1
+ * governor does, so the target is applied as a frequency floor, from
+ * ext-glue.c, each time upstream announces a change.
+ */
+void scx61_cpuperf_kick(void);
+#define cpufreq_update_util(rq, flags) ({ cpufreq_update_util(rq, flags); scx61_cpuperf_kick(); })
+
 /* 6.12 BPF pieces. */
 #define __bpf_kfunc			__used noinline
 #define __bpf_kfunc_start_defs()						\

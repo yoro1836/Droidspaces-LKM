@@ -18,3 +18,4 @@ head
 tail
 ls
 timeout
+chrt
