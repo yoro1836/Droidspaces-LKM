@@ -1,8 +1,16 @@
 --- a/scheds/rust/scx_lavd/src/bpf/intf.h
 +++ b/scheds/rust/scx_lavd/src/bpf/intf.h
-@@ -50,7 +50,12 @@
+@@ -48,9 +48,19 @@
+  * common constants
+  */
  enum {
- 	LAVD_CPU_ID_MAX			= 512,
+-	LAVD_CPU_ID_MAX			= 512,
++	/*
++	 * scx61: 64, not 512. lavd_init() walks every possible CPU id of every
++	 * domain, which a verifier before v6.4 counts branch by branch and
++	 * gave up on. A phone has a dozen CPUs; the loader refuses more.
++	 */
++	LAVD_CPU_ID_MAX			= 64,
  
 -	LAVD_CPDOM_MAX_NR		= 32, /* maximum number of compute domain */
 +	/*
