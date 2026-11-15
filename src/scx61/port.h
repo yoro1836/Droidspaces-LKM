@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Between the three files of the port: ext-port.c (upstream's ext.c and its
- * 6.1 glue), port-btf.c (BTF graft and the struct_ops slot) and port-main.c
+ * 6.1 glue), btf.c (BTF graft and the struct_ops slot) and main.c
  * (module init).
  */
 #ifndef DS_SCX61_PORT_H
@@ -23,7 +23,7 @@ void scx61_st_unreg(void *kdata);
 void scx61_set_ems_qjump(int node_offset, int nr_tex_offset);
 bool scx61_fair_pick_is_hooked(void);
 
-/* port-btf.c */
+/* btf.c */
 int scx61_module_member_offset(const char *mod, const char *type, const char *member);
 int scx61_btf_init(void);
 int scx61_struct_ops_init(void);

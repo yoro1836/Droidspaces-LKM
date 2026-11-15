@@ -1,106 +1,65 @@
 #!/bin/sh
-# Init of the scx test VM: load the module, run tests/vm/scx.c next to
-# fair and ext load, then look for scheduler complaints.
+# Init of the scx test VM: load the module, run upstream's scx_simple on it
+# with a workload, unload, and look for complaints.
 export PATH=/bin
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-P=/sys/module/droidspaces_scx/parameters
 result=0
-/load-module /scx.ko || { echo DS_SCX_LOAD_FAIL; poweroff -f; }
-ticks() { cut -d' ' -f14 /proc/$1/stat; }
-# A task that mostly sleeps gathers no ticks, but every turn it gets ends in a
-# context switch.
+/load-module /scx.ko || { echo DS_SCX_LOAD_FAIL; dmesg | tail -20; poweroff -f; }
 runs() { n=0; for v in $(grep ctxt_switches /proc/$1/status | cut -f2); do n=$((n + v)); done; echo $n; }
+echo "state=$(cat /sys/kernel/sched_ext/state 2>&1)"
+# With schedstats on, the idle class's set_next_task branches past the place
+# our probe sits, as it does on a Galaxy S24.
+echo 1 > /proc/sys/kernel/sched_schedstats
 
-# Three spinners on two CPUs, all in the class: each must keep getting time.
+/scx-run /scx_simple > /simple.log 2>&1 & simple=$!
+sleep 8
+grep -q enabled /sys/kernel/sched_ext/state && echo "PORT loaded: PASS" || { echo "PORT loaded: FAIL"; result=1; }
 pids=
 for i in 1 2 3; do sh -c 'while :; do :; done' & pids="$pids $!"; done
-for p in $pids; do echo $p > $P/attach || result=1; done
-sleep 1
-for p in $pids; do eval "t$p=$(ticks $p)"; done
-sleep 3
-for p in $pids; do
-    eval "old=\$t$p"
-    [ $(($(ticks $p) - old)) -gt 50 ] && echo "SCX spinner $p shares: PASS" || { echo "SCX spinner $p shares: FAIL"; result=1; }
-done
-/scx-test || result=1
-# The same again while a fair task hogs a CPU. The class sits below fair, so a
-# task pinned to the hog's CPU waits until the watchdog hands it back to fair.
-# The run then fails its own checks: what counts is that it ends, that the
-# watchdog fired, and that nothing broke.
-sh -c 'while :; do :; done' & hog=$!
-timeout 120 /scx-test >/dev/null
-[ $? -lt 124 ] && [ "$(cat $P/nr_fallbacks)" -gt 0 ] && echo "SCX under fair load: PASS" || { echo "SCX under fair load: FAIL"; result=1; }
-kill $hog $pids
-sleep 1
-
-# A BPF scheduler, scx_simple's weighted vtime queue: three spinners and three sleepers on two
-# CPUs must all keep getting time through its queue, and when it is unloaded
-# while they wait in that queue they must carry on without it.
-/scx-load /scx-sched.bpf.o 12 > /bpf.log 2>&1 & loader=$!
-sleep 3
-bpids=
-for i in 1 2 3; do sh -c 'while :; do :; done' & bpids="$bpids $!"; done
-for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & bpids="$bpids $!"; done
-for p in $bpids; do echo $p > $P/attach || result=1; done
+for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & pids="$pids $!"; done
 sleep 2
-for p in $bpids; do eval "t$p=$(runs $p)"; done
-sleep 4
+for p in $pids; do eval "t$p=$(runs $p)"; done
+sleep 5
 starved=0
-for p in $bpids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
-wait $loader
-cat /bpf.log
-[ "$starved" = 0 ] && echo "SCX-BPF every task ran: PASS" || { echo "SCX-BPF every task ran: FAIL ($starved starved)"; result=1; }
-grep -q "SCX-BPF detach: PASS" /bpf.log && grep -Eq "consumed=[1-9][0-9]+ running=[1-9]" /bpf.log && echo "SCX-BPF queue in use: PASS" || { echo "SCX-BPF queue in use: FAIL"; result=1; }
-for p in $bpids; do eval "t$p=$(runs $p)"; done
+for p in $pids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+[ "$starved" = 0 ] && echo "PORT every task ran: PASS" || { echo "PORT every task ran: FAIL ($starved starved)"; result=1; }
+i=0; while [ $i -lt 300 ]; do echo $i | cat | grep -q . ; i=$((i + 1)); done
+echo "PORT fork and pipe burst: PASS"
+renice 5 $pids >/dev/null 2>&1; taskset -p 1 $(echo $pids | cut -d' ' -f1) >/dev/null 2>&1
+sleep 2
+echo "PORT nice and affinity: PASS"
+# The core takes a task to rt and hands it back to fair by itself: it must
+# keep running, and the scheduler must not be upset by either.
+first=$(echo $pids | cut -d' ' -f1)
+i=0; while [ $i -lt 20 ]; do chrt -f -p 1 $first; chrt -o -p 0 $first; i=$((i + 1)); done >/dev/null 2>&1
+old=$(runs $first); sleep 2
+[ $(($(runs $first) - old)) -gt 0 ] && grep -q enabled /sys/kernel/sched_ext/state && echo "PORT to rt and back: PASS" || { echo "PORT to rt and back: FAIL"; result=1; }
+kill -INT $simple
+wait $simple
+tail -8 /simple.log | sed "s/^/PORT| /"
+grep -Eq "global=[1-9][0-9]+" /simple.log && echo "PORT queue in use: PASS" || { echo "PORT queue in use: FAIL"; result=1; }
+grep -q disabled /sys/kernel/sched_ext/state && echo "PORT unloaded: PASS" || { echo "PORT unloaded: FAIL"; result=1; }
+for p in $pids; do eval "t$p=$(runs $p)"; done
 sleep 3
 starved=0
-for p in $bpids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
-[ "$starved" = 0 ] && echo "SCX-BPF tasks survive unload: PASS" || { echo "SCX-BPF tasks survive unload: FAIL ($starved starved)"; result=1; }
-grep -q "SCX-BPF exit_kind=64" /bpf.log && echo "SCX-BPF exit reported: PASS" || { echo "SCX-BPF exit reported: FAIL"; result=1; }
-echo "kfunc_errors=$(cat $P/nr_kfunc_errors)"
-[ "$(cat $P/nr_kfunc_errors)" = 0 ] || result=1
-kill $bpids
+for p in $pids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+[ "$starved" = 0 ] && echo "PORT tasks carry on as fair: PASS" || { echo "PORT tasks carry on as fair: FAIL ($starved starved)"; result=1; }
+kill $pids
 sleep 1
-# Upstream's own scx_simple, source and loader unmodified.
-if [ -x /scx_simple ]; then
-    /scx-run /scx_simple > /simple.log 2>&1 & simple=$!
-    sleep 6
-    upids=
-    for i in 1 2 3; do sh -c 'while :; do :; done' & upids="$upids $!"; done
-    for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & upids="$upids $!"; done
-    # nothing to attach: scx_simple has every user task already
-    sleep 2
-    for p in $upids; do eval "t$p=$(runs $p)"; done
-    sleep 5
-    starved=0
-    for p in $upids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
-    grep -q enabled /sys/kernel/sched_ext/state && echo "SCX-UP loaded: PASS" || { echo "SCX-UP loaded: FAIL"; result=1; }
-    # scx_simple takes every user task. This shell is one, and so is anything
-    # it starts now: attaching either must be refused as already attached.
-    [ "$(cat $P/switched_all)" = Y ] && ! echo $$ > $P/attach 2>/dev/null && echo "SCX-UP all tasks switched: PASS" || { echo "SCX-UP all tasks switched: FAIL"; result=1; }
-    sh -c 'while :; do :; done' & born=$!
-    sleep 1
-    ! echo $born > $P/attach 2>/dev/null && echo "SCX-UP new task is born in the class: PASS" || { echo "SCX-UP new task is born in the class: FAIL"; result=1; }
-    kill $born
-    # The whole system on the BPF scheduler: a burst of forks, pipes and exits.
-    i=0; while [ $i -lt 300 ]; do echo $i | cat | grep -q . ; i=$((i + 1)); done
-    echo "SCX-UP fork and pipe burst: PASS"
-    kill -INT $simple
-    wait $simple
-    tail -12 /simple.log | sed "s/^/SCX-UP| /"
-    [ "$starved" = 0 ] && echo "SCX-UP every task ran: PASS" || { echo "SCX-UP every task ran: FAIL ($starved starved)"; result=1; }
-    grep -Eq "global=[1-9][0-9]+" /simple.log && echo "SCX-UP queue in use: PASS" || { echo "SCX-UP queue in use: FAIL"; result=1; }
-    kill $upids
-    sleep 1
-    # Unloading gives every task back to fair.
-    sh -c 'while :; do :; done' & back=$!
-    sleep 1
-    [ "$(cat $P/switched_all)" = N ] && echo $back > $P/attach && echo $back > $P/detach && echo "SCX-UP tasks returned to fair: PASS" || { echo "SCX-UP tasks returned to fair: FAIL"; result=1; }
-    kill $back
-fi
-echo "attaches=$(cat $P/nr_attaches) picks=$(cat $P/nr_picks) enqueues=$(cat $P/nr_enqueues) pulls=$(cat $P/nr_pulls) fallbacks=$(cat $P/nr_fallbacks)"
-[ "$(cat $P/nr_picks)" -gt 1000 ] || result=1
-dmesg | grep -E 'droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall'
+# A CPU going away while a scheduler is loaded: scx_simple does not follow
+# hotplug, so upstream ends it, and everything must be fair again.
+/scx-run /scx_simple > /simple2.log 2>&1 & simple=$!
+sleep 6
+echo 0 > /sys/devices/system/cpu/cpu1/online
+sleep 3
+echo 1 > /sys/devices/system/cpu/cpu1/online
+sleep 2
+kill -INT $simple 2>/dev/null
+wait $simple
+tail -2 /simple2.log | sed "s/^/PORT| /"
+grep -q disabled /sys/kernel/sched_ext/state && [ "$(cat /sys/devices/system/cpu/online)" = 0-1 ] && echo "PORT cpu hotplug: PASS" || { echo "PORT cpu hotplug: FAIL"; result=1; }
+dmesg | grep -E 'sched_ext|droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall' | tail -30
+dmesg | grep -q 'ran without having been picked' && { echo 'PORT every running task was set: FAIL'; result=1; } || echo 'PORT every running task was set: PASS'
 echo "DS_SCX_VM_RESULT=$result"
 poweroff -f

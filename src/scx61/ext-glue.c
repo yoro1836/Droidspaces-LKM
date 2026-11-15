@@ -5,7 +5,7 @@
  *
  * The class has no slot of its own in this kernel's class array, so it shares
  * the idle class's: the idle methods are entered through kprobes that move
- * the PC to the functions here (port-main.c), which call upstream's for a
+ * the PC to the functions here (main.c), which call upstream's for a
  * task of ours and do what idle did for the idle task. Whatever else the
  * 6.12 core calls into ext.c from, a vendor hook at the same place does.
  */
@@ -266,7 +266,7 @@ void scx61_update_curr(struct rq *rq)
  * task on that list: a task of ours was run as fair's choice, behind
  * upstream's back, and the device went down on a corrupted list when it was
  * put. EMS's hook runs before ours, so the task is taken off its list again
- * right there. The list node is found through EMS's own BTF, see port-main.c.
+ * right there. The list node is found through EMS's own BTF, see main.c.
  */
 static int scx61_ems_qjump = -1, scx61_ems_nr_tex;
 
@@ -613,7 +613,7 @@ void scx61_cpuperf_kick(void)
 	irq_work_queue(&scx61_perf_irq);
 }
 
-/* struct_ops, see port-btf.c. The value type the BPF core wants beside the
+/* struct_ops, see btf.c. The value type the BPF core wants beside the
  * ops type, and a member named scx for the BTF strings.
  */
 enum ds_struct_ops_state { DS_STRUCT_OPS_INIT, DS_STRUCT_OPS_INUSE, DS_STRUCT_OPS_TOBEFREE };

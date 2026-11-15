@@ -114,17 +114,14 @@ droidspaces_btfprobe-y := $(SCX_DIR)/btfprobe.o
 else ifeq ($(TARGET),scx)
 obj-m := droidspaces_scx.o
 SCX_DIR ?= src/scx61
-droidspaces_scx-y := $(SCX_DIR)/main.o $(SCX_DIR)/bpf.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
+# Upstream's kernel/sched/ext.c (src/scx61/upstream, through
+# scripts/gen-scx61.py) with its android14-6.1 glue.
+droidspaces_scx-y := $(SCX_DIR)/main.o $(SCX_DIR)/ext-port.o $(SCX_DIR)/btf.o \
+	$(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
 ifneq ($(GKI_ANDROID),)
 ccflags-y += -DDS_GKI_ANDROID='"$(GKI_ANDROID)"' -DDS_GKI_VERSION='"$(GKI_VERSION)"'
 endif
 ccflags-y += -I$(srctree)
-# SCX_PORT=1 builds upstream's ext.c with its 6.1 glue instead of the class
-# written by hand, which stays the default until the port passes its tests.
-ifeq ($(SCX_PORT),1)
-droidspaces_scx-y := $(SCX_DIR)/port-main.o $(SCX_DIR)/ext-port.o $(SCX_DIR)/port-btf.o \
-	$(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
-endif
 else
 obj-m := droidspaces_probe.o
 droidspaces_probe-y := src/probe.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
