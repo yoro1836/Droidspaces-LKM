@@ -14,6 +14,27 @@
  	LAVD_CPDOM_MAX_DIST		= 4,  /* maximum distance from one compute domain to another */
  
  	LAVD_STATUS_STR_LEN		= 4, /* {LR: Latency-critical, Regular}
+--- a/scheds/rust/scx_lavd/src/bpf/introspec.bpf.c
++++ b/scheds/rust/scx_lavd/src/bpf/introspec.bpf.c
+@@ -63,9 +63,16 @@
+ 	u64 cur_nr, prev_nr;
+ 	u32 cpu_id;
+ 	int i;
++	char comm[8];
+ 
+-	/* do not introspect itself */
+-	if (bpf_strncmp(p->comm, 8, "scx_lavd") == 0)
++	/*
++	 * do not introspect itself
++	 *
++	 * scx61: helpers take a task's fields as memory from v6.2 on, so the
++	 * name is copied to the stack first.
++	 */
++	__builtin_memcpy(comm, p->comm, sizeof(comm));
++	if (bpf_strncmp(comm, 8, "scx_lavd") == 0)
+ 		return;
+ 
+ 	/* introspec_arg is the number of schedules remaining */
 --- a/scheds/rust/scx_lavd/src/bpf/util.bpf.c
 +++ b/scheds/rust/scx_lavd/src/bpf/util.bpf.c
 @@ -257,17 +257,33 @@
