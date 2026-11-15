@@ -9,7 +9,9 @@
  * kernel that a kprobe can reach, and nothing here writes kernel memory:
  *
  * - map_check_btf() is replaced by a copy that also lets task storage maps
- *   have kptrs.
+ *   have kptrs, and that finds the kptrs of a value as v6.4 does: 6.1 gives
+ *   up on the whole value, silently, when it holds a struct or a pointer
+ *   that is not laid out or tagged the way its kptr search expects.
  * - A task storage element is freed without a look at its kptrs, since none
  *   could be there: they are released when the element is unlinked.
  * - The verifier is left to run, and the register it marked for a load of a
@@ -28,6 +30,189 @@
 #include <linux/kprobes.h>
 #include "core.h"
 #include "port.h"
+
+static s32 (*find_btf_id_fn)(const char *name, u32 kind, struct btf **btf_p);
+static s32 (*find_dtor_kfunc_fn)(struct btf *btf, u32 btf_id);
+static struct module *(*try_get_module_fn)(const struct btf *btf);
+/* the kernel's own, which knows module symbols: a destructor is in one */
+static unsigned long (*lookup_name_fn)(const char *name);
+
+/* btf.c keeps these two to itself. */
+static bool kind_is_struct(const struct btf_type *t)
+{
+	return BTF_INFO_KIND(t->info) == BTF_KIND_STRUCT;
+}
+
+static bool kind_is_datasec(const struct btf_type *t)
+{
+	return BTF_INFO_KIND(t->info) == BTF_KIND_DATASEC;
+}
+
+struct kptr_field {
+	u32 type_id;
+	u32 off;
+	enum bpf_kptr_type type;
+};
+
+/* Is @t, a member of a map value at byte @off, a kptr? Anything else in the
+ * value is none of our business, which is where 6.1's search differs: it
+ * fails on a pointer with a tag it does not know and on a struct that is
+ * not 8-byte aligned.
+ */
+static int kptr_field(const struct btf *btf, const struct btf_type *t, u32 off,
+		      struct kptr_field *field)
+{
+	const struct btf_type *tag;
+	const char *name;
+	u32 res_id;
+
+	if (!btf_type_is_ptr(t))
+		return 0;
+	tag = btf_type_by_id(btf, t->type);
+	if (!btf_type_is_type_tag(tag) || btf_type_is_type_tag(btf_type_by_id(btf, tag->type)))
+		return 0;
+	name = btf_name_by_offset(btf, tag->name_off);
+	if (!strcmp(name, "kptr_ref"))
+		field->type = BPF_KPTR_REF;
+	else if (!strcmp(name, "kptr"))
+		field->type = BPF_KPTR_UNREF;
+	else
+		return 0;
+	if (off % 8 || !kind_is_struct(btf_type_skip_modifiers(btf, tag->type, &res_id)))
+		return -EINVAL;
+	field->type_id = res_id;
+	field->off = off;
+	return 1;
+}
+
+static int find_kptrs(const struct btf *btf, const struct btf_type *t,
+		      struct kptr_field *fields, int max)
+{
+	const struct btf_var_secinfo *vsi;
+	const struct btf_member *member;
+	int i, ret, nr = 0;
+
+	if (kind_is_struct(t)) {
+		for_each_member(i, t, member) {
+			if (__btf_member_bit_offset(t, member) % 8)
+				continue;
+			ret = kptr_field(btf, btf_type_by_id(btf, member->type),
+					 __btf_member_bit_offset(t, member) / 8,
+					 nr < max ? &fields[nr] : &fields[max - 1]);
+			if (ret < 0)
+				return ret;
+			if (ret && ++nr > max)
+				return -E2BIG;
+		}
+	} else if (kind_is_datasec(t)) {
+		for_each_vsi(i, t, vsi) {
+			const struct btf_type *var = btf_type_by_id(btf, vsi->type);
+
+			ret = kptr_field(btf, btf_type_by_id(btf, var->type), vsi->offset,
+					 nr < max ? &fields[nr] : &fields[max - 1]);
+			if (ret < 0)
+				return ret;
+			if (ret && ++nr > max)
+				return -E2BIG;
+		}
+	}
+	return nr;
+}
+
+/* btf_parse_kptrs() of kernel/bpf/btf.c, on top of find_kptrs() */
+static __nocfi struct bpf_map_value_off *scx61_parse_kptrs(const struct btf *btf,
+							   const struct btf_type *t)
+{
+	struct kptr_field info_arr[BPF_MAP_VALUE_OFF_MAX];
+	struct bpf_map_value_off *tab;
+	struct btf *kernel_btf = NULL;
+	struct module *mod = NULL;
+	int ret, i, nr_off;
+
+	ret = find_kptrs(btf, t, info_arr, ARRAY_SIZE(info_arr));
+	if (ret < 0)
+		return ERR_PTR(ret);
+	if (!ret)
+		return NULL;
+
+	nr_off = ret;
+	tab = kzalloc(offsetof(struct bpf_map_value_off, off[nr_off]), GFP_KERNEL | __GFP_NOWARN);
+	if (!tab)
+		return ERR_PTR(-ENOMEM);
+
+	for (i = 0; i < nr_off; i++) {
+		const struct btf_type *t;
+		s32 id;
+
+		/* Find type in map BTF, and use it to look up the matching type
+		 * in vmlinux or module BTFs, by name and kind.
+		 */
+		t = btf_type_by_id(btf, info_arr[i].type_id);
+		id = find_btf_id_fn(btf_name_by_offset(btf, t->name_off), BTF_INFO_KIND(t->info),
+				    &kernel_btf);
+		if (id < 0) {
+			ret = id;
+			goto end;
+		}
+
+		/* Find and stash the function pointer for the destruction function that
+		 * needs to be eventually invoked from the map free path.
+		 */
+		mod = NULL;
+		if (info_arr[i].type == BPF_KPTR_REF) {
+			const struct btf_type *dtor_func;
+			unsigned long addr;
+			s32 dtor_btf_id;
+
+			dtor_btf_id = find_dtor_kfunc_fn(kernel_btf, id);
+			if (dtor_btf_id < 0) {
+				ret = dtor_btf_id;
+				goto end_btf;
+			}
+
+			dtor_func = btf_type_by_id(kernel_btf, dtor_btf_id);
+			if (!dtor_func) {
+				ret = -ENOENT;
+				goto end_btf;
+			}
+
+			if (btf_is_module(kernel_btf)) {
+				mod = try_get_module_fn(kernel_btf);
+				if (!mod) {
+					ret = -ENXIO;
+					goto end_btf;
+				}
+			}
+
+			addr = lookup_name_fn(btf_name_by_offset(kernel_btf, dtor_func->name_off));
+			if (!addr) {
+				ret = -EINVAL;
+				goto end_mod;
+			}
+			tab->off[i].kptr.dtor = (void *)addr;
+		}
+
+		tab->off[i].offset = info_arr[i].off;
+		tab->off[i].type = info_arr[i].type;
+		tab->off[i].kptr.btf_id = id;
+		tab->off[i].kptr.btf = kernel_btf;
+		tab->off[i].kptr.module = mod;
+	}
+	tab->nr_off = nr_off;
+	return tab;
+end_mod:
+	module_put(mod);
+end_btf:
+	btf_put(kernel_btf);
+end:
+	while (i--) {
+		btf_put(tab->off[i].kptr.btf);
+		if (tab->off[i].kptr.module)
+			module_put(tab->off[i].kptr.module);
+	}
+	kfree(tab);
+	return ERR_PTR(ret);
+}
 
 /* map_check_btf() of kernel/bpf/syscall.c, with BPF_MAP_TYPE_TASK_STORAGE
  * added to the maps that may hold kptrs.
@@ -85,7 +270,9 @@ static int scx61_map_check_btf(struct bpf_map *map, const struct btf *btf,
 			return -EOPNOTSUPP;
 	}
 
-	map->kptr_off_tab = btf_parse_kptrs(btf, value_type);
+	map->kptr_off_tab = scx61_parse_kptrs(btf, value_type);
+	if (IS_ERR(map->kptr_off_tab))
+		pr_warn("map %s: kptrs not usable: %ld\n", map->name, PTR_ERR(map->kptr_off_tab));
 	if (map_value_has_kptrs(map)) {
 		if (!bpf_capable()) {
 			ret = -EPERM;
@@ -247,6 +434,13 @@ static struct kretprobe map_func_krp = {
 int __init scx61_kptr_init(void)
 {
 	int ret;
+
+	find_btf_id_fn = (void *)kallsyms_name_to_addr("bpf_find_btf_id");
+	find_dtor_kfunc_fn = (void *)kallsyms_name_to_addr("btf_find_dtor_kfunc");
+	try_get_module_fn = (void *)kallsyms_name_to_addr("btf_try_get_module");
+	lookup_name_fn = (void *)kallsyms_name_to_addr("kallsyms_lookup_name");
+	if (!find_btf_id_fn || !find_dtor_kfunc_fn || !try_get_module_fn || !lookup_name_fn)
+		return -ENOENT;
 
 	ret = register_kprobe(&map_check_btf_kp);
 	if (ret)
