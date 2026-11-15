@@ -379,8 +379,10 @@ static struct kprobe task_storage_get_kp = {
  * scheduler that is small upstream runs out here (scx_lavd's dispatch does).
  * The limit only bounds how long verification takes, every path is still
  * checked, so a scheduler gets a larger one: the count is wound back as it
- * nears the limit, up to SCX61_INSN_BUDGET in all. states_equal(env, ...)
- * is where to see it from, the verifier asks it at every checkpoint.
+ * nears the limit, up to SCX61_INSN_BUDGET in all. It is seen from
+ * functions the verifier calls all along and that take env first:
+ * push_stack() at every branch and check_mem_access() at every load and
+ * store. states_equal() alone was not enough, the compiler inlined it.
  */
 #define SCX61_INSN_BUDGET (16U << 20)
 #define SCX61_INSN_STEP (1U << 19)
@@ -388,13 +390,12 @@ static struct { struct bpf_verifier_env *env; u32 given; } insn_budget[4];
 static unsigned int insn_budget_next;
 static DEFINE_SPINLOCK(insn_budget_lock);
 
-static int states_equal_pre(struct kprobe *kp, struct pt_regs *regs)
+static void extend_insn_budget(struct bpf_verifier_env *env)
 {
-	struct bpf_verifier_env *env = (void *)regs->regs[0];
 	unsigned int i;
 
 	if (env->prog->type != BPF_PROG_TYPE_STRUCT_OPS || env->insn_processed < 3 * SCX61_INSN_STEP / 2)
-		return 0;
+		return;
 	spin_lock(&insn_budget_lock);
 	for (i = 0; i < ARRAY_SIZE(insn_budget); i++)
 		if (insn_budget[i].env == env)
@@ -413,12 +414,22 @@ static int states_equal_pre(struct kprobe *kp, struct pt_regs *regs)
 		env->prev_insn_processed -= min(env->prev_insn_processed, SCX61_INSN_STEP);
 	}
 	spin_unlock(&insn_budget_lock);
+}
+
+static int insn_budget_pre(struct kprobe *kp, struct pt_regs *regs)
+{
+	extend_insn_budget((void *)regs->regs[0]);
 	return 0;
 }
 
 static struct kprobe states_equal_kp = {
 	.symbol_name = "states_equal",
-	.pre_handler = states_equal_pre,
+	.pre_handler = insn_budget_pre,
+};
+
+static struct kprobe push_stack_kp = {
+	.symbol_name = "push_stack",
+	.pre_handler = insn_budget_pre,
 };
 
 /* The rule itself is in check_map_kptr_access(), which the compiler folded
@@ -445,6 +456,7 @@ static int kptr_access_entry(struct kretprobe_instance *ri, struct pt_regs *regs
 	struct bpf_reg_state *reg;
 
 	a->env = NULL;
+	extend_insn_budget(env);
 	if (t != BPF_READ || value_regno < 0 || value_regno >= MAX_BPF_REG || regno >= MAX_BPF_REG)
 		return 0;
 	reg = &state->frame[state->curframe]->regs[regno];
@@ -537,7 +549,7 @@ int __init scx61_kptr_init(void)
 	if (true || !task_storage_busy || !storage_lookup_fn || register_kprobe(&task_storage_get_kp))
 		pr_warn("droidspaces_scx: task storage lookups can fail under load\n");
 	/* Small schedulers verify without it. */
-	if (register_kprobe(&states_equal_kp))
+	if (register_kprobe(&states_equal_kp) | register_kprobe(&push_stack_kp))
 		pr_warn("droidspaces_scx: no larger verifier budget, large schedulers will not load\n");
 	ret = register_kprobe(&map_check_btf_kp);
 	if (ret)
