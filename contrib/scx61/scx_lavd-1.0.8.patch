@@ -1,3 +1,19 @@
+--- a/scheds/rust/scx_lavd/src/bpf/intf.h
++++ b/scheds/rust/scx_lavd/src/bpf/intf.h
+@@ -50,7 +50,12 @@
+ enum {
+ 	LAVD_CPU_ID_MAX			= 512,
+ 
+-	LAVD_CPDOM_MAX_NR		= 32, /* maximum number of compute domain */
++	/*
++	 * scx61: 8, not 32. lavd_dispatch() loops over this many domains per
++	 * distance, which a verifier before v6.4 walks round by round and gave
++	 * up on. A phone has four or fewer; the loader refuses more.
++	 */
++	LAVD_CPDOM_MAX_NR		= 8, /* maximum number of compute domain */
+ 	LAVD_CPDOM_MAX_DIST		= 4,  /* maximum distance from one compute domain to another */
+ 
+ 	LAVD_STATUS_STR_LEN		= 4, /* {LR: Latency-critical, Regular}
 --- a/scheds/rust/scx_lavd/src/bpf/util.bpf.c
 +++ b/scheds/rust/scx_lavd/src/bpf/util.bpf.c
 @@ -257,17 +257,33 @@
