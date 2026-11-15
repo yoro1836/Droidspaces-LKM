@@ -290,6 +290,8 @@ static __nocfi int scx_reg(void *kdata)
 	}
 	WRITE_ONCE(scx_errored, false);
 	rcu_assign_pointer(scx_ops, ops);
+	if (!(ops->flags & SCX_OPS_SWITCH_PARTIAL))
+		scx_switch_all_tasks(true);
 	mutex_unlock(&scx_reg_lock);
 	pr_info("BPF scheduler \"%s\" enabled\n", ops->name);
 	return 0;
@@ -301,6 +303,9 @@ static __nocfi void scx_unreg(void *kdata)
 	static struct scx_exit_info ei;
 
 	mutex_lock(&scx_reg_lock);
+	/* Tasks leave while the scheduler can still see them go. */
+	if (!(ops->flags & SCX_OPS_SWITCH_PARTIAL))
+		scx_switch_all_tasks(false);
 	rcu_assign_pointer(scx_ops, NULL);
 	synchronize_rcu();
 	scx_ops_gone();
@@ -615,6 +620,7 @@ int scx_bpf_init(void)
 	BTF_TYPE_EMIT_ENUM(SCX_DSQ_LOCAL);
 	BTF_TYPE_EMIT_ENUM(SCX_ENQ_WAKEUP);
 	BTF_TYPE_EMIT_ENUM(SCX_KICK_IDLE);
+	BTF_TYPE_EMIT_ENUM(SCX_OPS_SWITCH_PARTIAL);
 	btf_ctx_access_fn = (void *)kallsyms_name_to_addr("btf_ctx_access");
 	btf_struct_access_fn = (void *)kallsyms_name_to_addr("btf_struct_access");
 	base_func_proto_fn = (void *)kallsyms_name_to_addr("bpf_base_func_proto");

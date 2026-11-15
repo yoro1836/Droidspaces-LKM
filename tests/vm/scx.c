@@ -98,7 +98,11 @@ int main(void)
 		return 1;
 	child = fork();
 	if (!child) {
-		if (param("attach", getpid()))
+		/* A child of an attached task is born attached. The parent
+		 * may have been handed back to fair by the watchdog, though.
+		 */
+		i = param("attach", getpid());
+		if (i && i != -EINVAL)
 			_exit(2);
 		for (i = 0; i < 300; i++)
 			if (read(a[0], &c, 1) != 1 || write(b[1], &c, 1) != 1)

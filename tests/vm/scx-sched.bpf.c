@@ -40,6 +40,7 @@ struct sched_ext_ops {
 	void (*enable)(struct task_struct *p);
 	s32 (*init)(void);
 	void (*exit)(struct scx_exit_info *info);
+	u64 flags;
 	u32 timeout_ms;
 	char name[128];
 };
@@ -154,6 +155,8 @@ struct sched_ext_ops simple_ops = {
 	.enable = (void *)simple_enable,
 	.init = (void *)simple_init,
 	.exit = (void *)simple_exit,
+	/* only the tasks the test attaches: SCX_OPS_SWITCH_PARTIAL */
+	.flags = 1ULL << 3,
 	.timeout_ms = 5000,
 	.name = "simple",
 };

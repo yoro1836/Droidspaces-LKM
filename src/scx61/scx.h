@@ -34,6 +34,13 @@ enum scx_enq_flags {
 	SCX_ENQ_LAST		= 1LLU << 41,
 };
 
+enum scx_ops_flags {
+	SCX_OPS_KEEP_BUILTIN_IDLE	= 1LLU << 0,
+	SCX_OPS_ENQ_LAST		= 1LLU << 1,
+	SCX_OPS_ENQ_EXITING		= 1LLU << 2,
+	SCX_OPS_SWITCH_PARTIAL		= 1LLU << 3,
+};
+
 enum scx_kick_flags {
 	SCX_KICK_IDLE		= 1LLU << 0,
 	SCX_KICK_PREEMPT	= 1LLU << 1,
@@ -167,6 +174,8 @@ struct sched_ext_ops {
 int scx_bpf_init(void);
 int scx_register_kfuncs(void);
 void scx_ops_gone(void);
+/* Move every user task into the class, or every task of the class out. */
+void scx_switch_all_tasks(bool on);
 /* The loaded scheduler's pick, or -1 when there is none or it has no say. */
 s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_flags);
 /* False when no scheduler implements the callback. */

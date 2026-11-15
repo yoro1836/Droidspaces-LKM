@@ -69,13 +69,23 @@ if [ -x /scx_simple ]; then
     upids=
     for i in 1 2 3; do sh -c 'while :; do :; done' & upids="$upids $!"; done
     for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & upids="$upids $!"; done
-    for p in $upids; do echo $p > $P/attach || result=1; done
+    # nothing to attach: scx_simple has every user task already
     sleep 2
     for p in $upids; do eval "t$p=$(runs $p)"; done
     sleep 5
     starved=0
     for p in $upids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
     grep -q enabled /sys/kernel/sched_ext/state && echo "SCX-UP loaded: PASS" || { echo "SCX-UP loaded: FAIL"; result=1; }
+    # scx_simple takes every user task. This shell is one, and so is anything
+    # it starts now: attaching either must be refused as already attached.
+    [ "$(cat $P/switched_all)" = Y ] && ! echo $$ > $P/attach 2>/dev/null && echo "SCX-UP all tasks switched: PASS" || { echo "SCX-UP all tasks switched: FAIL"; result=1; }
+    sh -c 'while :; do :; done' & born=$!
+    sleep 1
+    ! echo $born > $P/attach 2>/dev/null && echo "SCX-UP new task is born in the class: PASS" || { echo "SCX-UP new task is born in the class: FAIL"; result=1; }
+    kill $born
+    # The whole system on the BPF scheduler: a burst of forks, pipes and exits.
+    i=0; while [ $i -lt 300 ]; do echo $i | cat | grep -q . ; i=$((i + 1)); done
+    echo "SCX-UP fork and pipe burst: PASS"
     kill -INT $simple
     wait $simple
     tail -12 /simple.log | sed "s/^/SCX-UP| /"
@@ -83,6 +93,11 @@ if [ -x /scx_simple ]; then
     grep -Eq "global=[1-9][0-9]+" /simple.log && echo "SCX-UP queue in use: PASS" || { echo "SCX-UP queue in use: FAIL"; result=1; }
     kill $upids
     sleep 1
+    # Unloading gives every task back to fair.
+    sh -c 'while :; do :; done' & back=$!
+    sleep 1
+    [ "$(cat $P/switched_all)" = N ] && echo $back > $P/attach && echo $back > $P/detach && echo "SCX-UP tasks returned to fair: PASS" || { echo "SCX-UP tasks returned to fair: FAIL"; result=1; }
+    kill $back
 fi
 echo "attaches=$(cat $P/nr_attaches) picks=$(cat $P/nr_picks) enqueues=$(cat $P/nr_enqueues) pulls=$(cat $P/nr_pulls) fallbacks=$(cat $P/nr_fallbacks)"
 [ "$(cat $P/nr_picks)" -gt 1000 ] || result=1

@@ -890,6 +890,49 @@ out:
 	return ret;
 }
 
+/* With a scheduler loaded in its default mode every user task is ours, as
+ * upstream switches every task of the fair class. Kernel threads stay with
+ * fair: they run first, briefly, and cannot be starved by a scheduler bug.
+ */
+static bool scx_switch_all;
+module_param_named(switched_all, scx_switch_all, bool, 0400);
+
+static bool scx_wants(struct task_struct *p)
+{
+	return p->sched_class == fair_class && !(p->flags & PF_KTHREAD) && !is_idle_task(p);
+}
+
+void scx_switch_all_tasks(bool on)
+{
+	struct task_struct *g, *p;
+
+	/* Set first, so that a task forked during the walk is not missed. */
+	WRITE_ONCE(scx_switch_all, on);
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		if (on ? scx_wants(p) : is_scx(p))
+			scx_set_class(p, on);
+	}
+	rcu_read_unlock();
+}
+
+/* A new task has been given to fair by sched_fork() and has not run or been
+ * queued yet, so its class can simply be set. It joins when everything is
+ * ours, or when its parent is.
+ */
+static void rvh_wake_up_new_task(void *unused, struct task_struct *p)
+{
+	if (!scx_wants(p) || (!READ_ONCE(scx_switch_all) && !is_scx(current)))
+		return;
+	INIT_LIST_HEAD(&p->rt.run_list);
+	memset(scx_ent(p), 0, sizeof(struct sched_ext_entity));
+	scx_ent(p)->weight = 100;
+	p->rt.timeout = SCX_MAGIC;
+	p->sched_class = idle_class;
+	scx_ops_enable(p);
+	nr_attaches++;
+}
+
 /* The class sits below fair, so a task of ours on a CPU that fair or rt work
  * holds does not run, and one that cannot move away would wait for as long as
  * that lasts without even taking a SIGKILL. Give such a task back to fair
@@ -1048,7 +1091,8 @@ static int __init scx_init(void)
 	      register_trace_android_rvh_after_dequeue_task(rvh_after, NULL) ?:
 	      register_trace_android_rvh_before_do_sched_yield(rvh_before_yield, NULL) ?:
 	      register_trace_android_rvh_set_user_nice(rvh_set_user_nice, NULL) ?:
-	      register_trace_android_rvh_sched_newidle_balance(rvh_newidle, NULL);
+	      register_trace_android_rvh_sched_newidle_balance(rvh_newidle, NULL) ?:
+	      register_trace_android_rvh_wake_up_new_task(rvh_wake_up_new_task, NULL);
 	if (ret)
 		pr_err("vendor hooks: %d, attach will misbehave\n", ret);
 	timer_setup(&scx_watchdog, scx_watchdog_fn, 0);

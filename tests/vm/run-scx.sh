@@ -8,6 +8,9 @@ log_dir=${DS_SCX_LOG_DIR:-out/scx/vm}
 case "$log_dir" in out/*) ;; *) exit 2;; esac
 case "$log_dir" in *..*) exit 2;; esac
 mkdir -p "$root/$log_dir"
+# A stale log from an earlier run must not pass for this one.
+rm -f "$root/$log_dir/console.log"
+docker ps >/dev/null
 docker run --rm --platform linux/amd64 -v "$root:/work" \
     -e KERNEL="${DS_SCX_KERNEL:-/work/out/gki/android14-6.1/Image}" \
     -e MODULE="${DS_SCX_MODULE:-/work/out/gki/android14-6.1-scx/droidspaces_scx.ko}" \
