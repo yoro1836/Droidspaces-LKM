@@ -629,17 +629,24 @@ void scx61_cpuperf_kick(void)
 	irq_work_queue(&scx61_perf_irq);
 }
 
-/* 6.1's bpf_task_storage_get() returns NULL when this CPU is already inside
- * a task storage operation, as when a wakeup from an interrupt lands in a
- * task's exit. From v6.2 only tracing programs get that guard. Schedulers
- * count on the lookup: scx_bpfland returned the failure from select_cpu()
- * and scx_lavd gave up with "task_ctx lookup failed", both on a Galaxy S24.
- * So the CPU's count is set aside while a callback runs, which is what v6.2
- * amounts to. The guard is there against recursion into the storage lock,
- * which is held with interrupts off, so a callback cannot land inside it.
- * Only done where the callback cannot move to another CPU.
+/* 6.1's bpf_task_storage_get() returns NULL when this CPU's count says a task
+ * storage operation is under way. The count is taken with only migration
+ * off, so a task preempted inside such an operation leaves it set for every
+ * task that runs on the CPU after it, and an interrupt can land in one too.
+ * From v6.2 only tracing programs get that guard. Schedulers count on the
+ * lookup: on a Galaxy S24 scx_bpfland returned the failure from select_cpu(),
+ * and scx_lavd gave up with "task_ctx lookup failed" and, under load, with
+ * "task_ctx_stor first lookup failed" from a callback run with preemption on.
+ *
+ * So the count is set aside while a callback runs, which is what v6.2
+ * amounts to: the guard is against recursion into the storage lock, held
+ * with interrupts off, which a callback cannot land in. A callback that
+ * could be preempted runs with preemption off for it, which no BPF program
+ * here minds: none is sleepable on this kernel. Otherwise the count could be
+ * put back after its owner had already dropped it.
  */
 static int __percpu *scx61_storage_busy;
+#define SCX61_STORAGE_PREEMPT (1 << 30)
 
 void scx61_set_storage_busy(void *busy)
 {
@@ -648,20 +655,28 @@ void scx61_set_storage_busy(void *busy)
 
 int scx61_storage_enter(void)
 {
-	int busy;
+	int ret = 0, busy;
 
-	if (!scx61_storage_busy || preemptible())
+	if (!scx61_storage_busy)
 		return 0;
+	if (preemptible()) {
+		preempt_disable();
+		ret = SCX61_STORAGE_PREEMPT;
+	}
 	busy = this_cpu_read(*scx61_storage_busy);
 	if (busy)
 		this_cpu_write(*scx61_storage_busy, 0);
-	return busy;
+	return ret | busy;
 }
 
-void scx61_storage_exit(int busy)
+void scx61_storage_exit(int saved)
 {
+	int busy = saved & ~SCX61_STORAGE_PREEMPT;
+
 	if (busy)
 		this_cpu_write(*scx61_storage_busy, busy);
+	if (saved & SCX61_STORAGE_PREEMPT)
+		preempt_enable();
 }
 
 /* struct_ops, see btf.c. The value type the BPF core wants beside the
