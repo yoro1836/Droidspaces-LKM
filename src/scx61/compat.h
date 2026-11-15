@@ -246,7 +246,11 @@ void scx61_storage_exit(int busy);
 	scx61_storage_exit(__scx61_b);						\
 	__scx61_r;								\
 })
-#define cpufreq_update_util(rq, flags) ({ cpufreq_update_util(rq, flags); scx61_cpuperf_kick(); })
+/* Only the floors of scx61_perf_workfn() carry the target. The governor's
+ * hook wants the rq's clock updated, which a callback run from
+ * sched_setattr() did not have, and nothing here reads what it would get.
+ */
+#define cpufreq_update_util(rq, flags) scx61_cpuperf_kick()
 
 #include "compat-bpf.h"
 

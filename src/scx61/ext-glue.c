@@ -325,6 +325,12 @@ static void scx61_rvh_after_enqueue(void *unused, struct rq *rq, struct task_str
 	per_cpu(scx61_lent, cpu_of(rq)) = NULL;
 	p->sched_class = &ext_sched_class;
 	sub_nr_running(rq, 1);
+	/* EMS's own after-enqueue handler ran before this one and can have put
+	 * the task back on its queue jump list. Its pick would then hand it to
+	 * fair, which went down in set_next_entity() after half an hour on a
+	 * Galaxy S24.
+	 */
+	scx61_ems_forget(rq, p);
 	/* see scx61_set_next_task() */
 	if (p == rq->curr) {
 		set_next_task_scx(rq, p, false);
