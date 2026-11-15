@@ -531,7 +531,10 @@ int __init scx61_kptr_init(void)
 
 	task_storage_busy = (void *)kallsyms_name_to_addr("bpf_task_storage_busy");
 	storage_lookup_fn = (void *)kallsyms_name_to_addr("bpf_local_storage_lookup");
-	if (!task_storage_busy || !storage_lookup_fn || register_kprobe(&task_storage_get_kp))
+	/* Off: device crashes on non-executable trampolines began with the
+	 * module that added this probe, and this is the check.
+	 */
+	if (true || !task_storage_busy || !storage_lookup_fn || register_kprobe(&task_storage_get_kp))
 		pr_warn("droidspaces_scx: task storage lookups can fail under load\n");
 	/* Small schedulers verify without it. */
 	if (register_kprobe(&states_equal_kp))
