@@ -30,6 +30,24 @@ timeout 120 /scx-test >/dev/null
 [ $? -lt 124 ] && [ "$(cat $P/nr_fallbacks)" -gt 0 ] && echo "SCX under fair load: PASS" || { echo "SCX under fair load: FAIL"; result=1; }
 kill $hog $pids
 sleep 1
+
+# A BPF scheduler that sends everything to CPU 0: with it loaded, tasks of the
+# class that sleep and wake must all be found there.
+/scx-load /scx-sched.bpf.o 8 > /bpf.log 2>&1 & loader=$!
+sleep 3
+bpids=
+for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & bpids="$bpids $!"; done
+for p in $bpids; do echo $p > $P/attach; done
+sleep 2
+on0=0
+for p in $bpids; do [ "$(cut -d' ' -f39 /proc/$p/stat)" = 0 ] && on0=$((on0 + 1)); done
+wait $loader
+cat /bpf.log
+calls=$(cat $P/nr_ops_calls)
+echo "SCX-BPF on_cpu0=$on0/3 ops_calls=$calls"
+grep -q "SCX-BPF detach: PASS" /bpf.log && [ "$on0" = 3 ] && [ "$calls" -gt 100 ] && echo "SCX-BPF scheduler decides: PASS" || { echo "SCX-BPF scheduler decides: FAIL"; result=1; }
+kill $bpids
+sleep 1
 echo "attaches=$(cat $P/nr_attaches) picks=$(cat $P/nr_picks) enqueues=$(cat $P/nr_enqueues) pulls=$(cat $P/nr_pulls) fallbacks=$(cat $P/nr_fallbacks)"
 [ "$(cat $P/nr_picks)" -gt 1000 ] || result=1
 dmesg | grep -E 'droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall'

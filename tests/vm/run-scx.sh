@@ -19,6 +19,10 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     for a in $(cat /work/tests/vm/busybox-applets); do test "$a" = busybox || ln -s busybox /tmp/root/bin/$a; done
     aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror /work/tests/vm/load-module.c -o /tmp/root/load-module
     aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror /work/tests/vm/scx.c -o /tmp/root/scx-test
+    clang -O2 -g -target bpf -D__TARGET_ARCH_arm64 -I/usr/include/aarch64-linux-gnu \
+        -c /work/tests/vm/scx-sched.bpf.c -o /tmp/root/scx-sched.bpf.o
+    aarch64-linux-gnu-gcc -static -O2 -Wall /work/tests/vm/scx-load.c -o /tmp/root/scx-load \
+        -lbpf -lelf -lz -lzstd
     cp "$MODULE" /tmp/root/scx.ko
     cp /work/tests/vm/scx-init /tmp/root/init
     chmod +x /tmp/root/init
@@ -32,7 +36,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
-grep -E "^(SCX |attaches=|DS_SCX)" "$log" || true
+grep -E "^(SCX|attaches=|DS_SCX|libbpf)" "$log" || true
 if ! grep -q "^DS_SCX_VM_RESULT=0" "$log" ||
    grep -Eq "WARNING: CPU:|BUG:|Oops:|Kernel panic|bad: scheduling|Unable to handle|rcu.*stall" "$log"; then
     tail -80 "$log"; exit 1

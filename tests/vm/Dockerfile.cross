@@ -1,7 +1,9 @@
 # The VM test image for hosts without arm64 binfmt: QEMU runs natively, the
 # test programs are cross-compiled, and only busybox is an arm64 binary.
+# clang and the arm64 libbpf are for the BPF scheduler in the scx test.
 FROM debian:bookworm-slim
 RUN dpkg --add-architecture arm64 && apt-get update && \
     apt-get install -y --no-install-recommends qemu-system-arm cpio \
     gcc-aarch64-linux-gnu libc6-dev-arm64-cross busybox-static:arm64 \
+    clang llvm libbpf-dev:arm64 libelf-dev:arm64 zlib1g-dev:arm64 libzstd-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*

@@ -32,6 +32,7 @@
 #include "core.h"
 #include "hint.h"
 #include "../gki-target.h"
+#include "scx.h"
 
 /* p->rt is unused while a task is not in the rt class, and fork resets it. */
 #define SCX_MAGIC 0x5343583631UL
@@ -332,6 +333,10 @@ static int scx_select_task_rq(struct task_struct *p, int prev_cpu, int flags)
 	unsigned int best_cost = UINT_MAX;
 	int cpu, best = prev_cpu;
 
+	cpu = scx_ops_select_cpu(p, prev_cpu, flags);
+	if (cpu >= 0)
+		return cpu;
+
 	for_each_cpu_and(cpu, p->cpus_ptr, cpu_active_mask) {
 		struct rq *rq = cpu_rq(cpu);
 		unsigned int nr = READ_ONCE(rq->nr_running);
@@ -548,6 +553,10 @@ static int __init scx_init(void)
 	timer_setup(&scx_watchdog, scx_watchdog_fn, 0);
 	mod_timer(&scx_watchdog, jiffies + HZ / 4);
 	pr_info("ext class sharing the idle slot is active\n");
+	/* The class works without a BPF scheduler, so this is not fatal. */
+	ret = scx_bpf_init();
+	if (ret)
+		pr_warn("no BPF schedulers: %d\n", ret);
 	return 0;
 }
 module_init(scx_init);
