@@ -107,6 +107,8 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
  * the put was not part of a pick at all, before anything else touches the rq.
  */
 static DEFINE_PER_CPU(struct task_struct *, scx61_put);
+/* The running task that was set from the enqueue hook, see scx61_set_next_task(). */
+static DEFINE_PER_CPU(struct task_struct *, scx61_set);
 /* The task the stop class is counting on our behalf, see scx61_rvh_enqueue. */
 static DEFINE_PER_CPU(struct task_struct *, scx61_lent);
 static DEFINE_PER_CPU(struct irq_work, scx61_resched);
@@ -201,18 +203,31 @@ void scx61_put_prev_task(struct rq *rq, struct task_struct *p)
 		return;
 	}
 	scx61_flush_put(rq, NULL);
+	per_cpu(scx61_set, cpu_of(rq)) = NULL;
 	if (!per_cpu(scx61_picking, cpu_of(rq)))
 		per_cpu(scx61_put, cpu_of(rq)) = p;
 }
 
-/* set_next_task_idle() */
+/* set_next_task_idle(). Its first instruction is the schedstats static
+ * branch, which a kprobe cannot sit on, so the probe is on the second, and
+ * with schedstats on the function branches away before it gets there: a
+ * Galaxy S24 ran a task the core had set this way without upstream being
+ * told. The one case the core sets a task of ours itself, rather than through
+ * our pick, is the running task after it was taken off the rq and put back
+ * around a change, and there the enqueue of the running task comes first:
+ * scx61_rvh_after_enqueue() sets the task then and notes it here, for when
+ * the probe does fire.
+ */
 void scx61_set_next_task(struct rq *rq, struct task_struct *p, bool first)
 {
 	scx61_flush_put(rq, NULL);
-	if (p == rq->idle)
+	if (p == rq->idle) {
 		scx61_idle_set_next(rq);
-	else
+	} else if (per_cpu(scx61_set, cpu_of(rq)) == p) {
+		per_cpu(scx61_set, cpu_of(rq)) = NULL;
+	} else {
 		set_next_task_scx(rq, p, first);
+	}
 }
 
 /* check_preempt_curr_idle(): reached when curr and p share the slot. */
@@ -309,6 +324,11 @@ static void scx61_rvh_after_enqueue(void *unused, struct rq *rq, struct task_str
 	per_cpu(scx61_lent, cpu_of(rq)) = NULL;
 	p->sched_class = &ext_sched_class;
 	sub_nr_running(rq, 1);
+	/* see scx61_set_next_task() */
+	if (p == rq->curr) {
+		set_next_task_scx(rq, p, false);
+		per_cpu(scx61_set, cpu_of(rq)) = p;
+	}
 }
 
 /* The same for dequeue, where the stop class takes one off the count: one is
