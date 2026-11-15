@@ -379,10 +379,11 @@ static struct kprobe task_storage_get_kp = {
  * scheduler that is small upstream runs out here (scx_lavd's dispatch does).
  * The limit only bounds how long verification takes, every path is still
  * checked, so a scheduler gets a larger one: the count is wound back as it
- * nears the limit, up to SCX61_INSN_BUDGET in all. It is seen from
- * functions the verifier calls all along and that take env first:
- * push_stack() at every branch and check_mem_access() at every load and
- * store. states_equal() alone was not enough, the compiler inlined it.
+ * nears the limit, up to SCX61_INSN_BUDGET in all. It is seen from the
+ * probe already on check_mem_access(), at every load and store, and from
+ * states_equal(), which the compiler mostly inlined. A new probe on
+ * push_stack() went with struct_ops trampolines that could not be executed
+ * on a Galaxy S24, as one on bpf_task_storage_get() had, so none is added.
  */
 #define SCX61_INSN_BUDGET (16U << 20)
 #define SCX61_INSN_STEP (1U << 19)
@@ -427,10 +428,6 @@ static struct kprobe states_equal_kp = {
 	.pre_handler = insn_budget_pre,
 };
 
-static struct kprobe push_stack_kp = {
-	.symbol_name = "push_stack",
-	.pre_handler = insn_budget_pre,
-};
 
 /* The rule itself is in check_map_kptr_access(), which the compiler folded
  * into its caller, so the probe is on that: check_mem_access(env, insn_idx,
@@ -549,7 +546,7 @@ int __init scx61_kptr_init(void)
 	if (true || !task_storage_busy || !storage_lookup_fn || register_kprobe(&task_storage_get_kp))
 		pr_warn("droidspaces_scx: task storage lookups can fail under load\n");
 	/* Small schedulers verify without it. */
-	if (register_kprobe(&states_equal_kp) | register_kprobe(&push_stack_kp))
+	if (register_kprobe(&states_equal_kp))
 		pr_warn("droidspaces_scx: no larger verifier budget, large schedulers will not load\n");
 	ret = register_kprobe(&map_check_btf_kp);
 	if (ret)
