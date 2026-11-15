@@ -334,6 +334,32 @@ static struct kprobe selem_unlink_kp = {
 	.pre_handler = selem_unlink_pre,
 };
 
+/* The verifier forgets a checkpoint that was compared four times without a
+ * match. A v6.4 one walks a bpf_for() once, as an iterator; this one walks
+ * every round, each round's checkpoint differs from the others' by the
+ * counter, so they all miss each other and are dropped before the paths that
+ * would have ended at them come back. Those paths are then walked again in
+ * full, and a scheduler with nested loops (scx_lavd's dispatch) never
+ * finishes. states_equal(env, old, cur) is where a miss is found, and old
+ * always sits in the list entry that keeps the two counts, so the entry is
+ * given hits it cannot outnumber.
+ */
+static int states_equal_pre(struct kprobe *kp, struct pt_regs *regs)
+{
+	struct bpf_verifier_env *env = (void *)regs->regs[0];
+	struct bpf_verifier_state_list *sl =
+		container_of((struct bpf_verifier_state *)regs->regs[1], typeof(*sl), state);
+
+	if (env->prog->type == BPF_PROG_TYPE_STRUCT_OPS && sl->hit_cnt < (1 << 20))
+		sl->hit_cnt += 1 << 20;
+	return 0;
+}
+
+static struct kprobe states_equal_kp = {
+	.symbol_name = "states_equal",
+	.pre_handler = states_equal_pre,
+};
+
 /* The rule itself is in check_map_kptr_access(), which the compiler folded
  * into its caller, so the probe is on that: check_mem_access(env, insn_idx,
  * regno, off, bpf_size, t, value_regno, strict_alignment_once). On the way
@@ -442,6 +468,9 @@ int __init scx61_kptr_init(void)
 	if (!find_btf_id_fn || !find_dtor_kfunc_fn || !try_get_module_fn || !lookup_name_fn)
 		return -ENOENT;
 
+	/* Small schedulers verify without it. */
+	if (register_kprobe(&states_equal_kp))
+		pr_warn("droidspaces_scx: verifier checkpoints are not kept, large schedulers will not load\n");
 	ret = register_kprobe(&map_check_btf_kp);
 	if (ret)
 		return ret;

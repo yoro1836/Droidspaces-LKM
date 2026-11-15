@@ -35,7 +35,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     mknod /tmp/root/dev/null c 1 3
     cd /tmp/root
     find . -print0 | cpio --null -o -H newc >/tmp/initramfs
-    timeout 500 qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp 2 \
+    timeout 600 qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp 2 \
         -nographic -monitor none -nic none -no-reboot -kernel "$KERNEL" \
         -initrd /tmp/initramfs \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1

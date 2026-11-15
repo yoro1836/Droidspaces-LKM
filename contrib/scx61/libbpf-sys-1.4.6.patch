@@ -1,0 +1,94 @@
+--- a/libbpf/src/libbpf.c
++++ b/libbpf/src/libbpf.c
+@@ -1374,7 +1374,7 @@
+ 		map->def.key_size = sizeof(int);
+ 		map->def.value_size = type->size;
+ 		map->def.max_entries = 1;
+-		map->def.map_flags = strcmp(sec_name, STRUCT_OPS_LINK_SEC) == 0 ? BPF_F_LINK : 0;
++		map->def.map_flags = 0;
+ 
+ 		map->st_ops = calloc(1, sizeof(*map->st_ops));
+ 		if (!map->st_ops)
+@@ -3495,6 +3495,25 @@
+ 		}
+ 	}
+ 
++	{
++		int kptr_ref = -1, n;
++
++		n = btf__type_cnt(obj->btf);
++		for (i = 1; i < n; i++) {
++			struct btf_type *t = btf_type_by_id(obj->btf, i);
++
++			if (!btf_is_type_tag(t) ||
++			    strcmp(btf__name_by_offset(obj->btf, t->name_off), "kptr"))
++				continue;
++			if (kptr_ref < 0)
++				kptr_ref = btf__add_str(obj->btf, "kptr_ref");
++			if (kptr_ref < 0)
++				return kptr_ref;
++			t = btf_type_by_id(obj->btf, i);
++			t->name_off = kptr_ref;
++		}
++	}
++
+ 	sanitize = btf_needs_sanitization(obj);
+ 	if (sanitize) {
+ 		const void *raw_data;
+@@ -5564,6 +5583,9 @@
+ 	if (obj->btf_modules_loaded)
+ 		return 0;
+ 
++	obj->btf_modules_loaded = true;
++	return 0;
++
+ 	if (obj->gen_loader)
+ 		return 0;
+ 
+@@ -6056,7 +6078,12 @@
+ 				}
+ 				insn[1].imm = ext->kcfg.data_off;
+ 			} else /* EXT_KSYM */ {
+-				if (ext->ksym.type_id && ext->is_set) { /* typed ksyms */
++				if (ext->ksym.type_id && ext->is_set &&
++				    btf_is_func(btf__type_by_id(obj->btf, ext->btf_id))) {
++					/* android14-6.1, see contrib/scx61 of Droidspaces-LKM */
++					insn[0].imm = 1;
++					insn[1].imm = 0;
++				} else if (ext->ksym.type_id && ext->is_set) { /* typed ksyms */
+ 					insn[0].src_reg = BPF_PSEUDO_BTF_ID;
+ 					insn[0].imm = ext->ksym.kernel_btf_id;
+ 					insn[1].imm = ext->ksym.kernel_btf_obj_fd;
+@@ -7324,7 +7351,7 @@
+ 		opts->expected_attach_type = 0;
+ 
+ 	if (def & SEC_SLEEPABLE)
+-		opts->prog_flags |= BPF_F_SLEEPABLE;
++		if (prog->type != BPF_PROG_TYPE_STRUCT_OPS) opts->prog_flags |= BPF_F_SLEEPABLE;
+ 
+ 	if (prog->type == BPF_PROG_TYPE_XDP && (def & SEC_XDP_FRAGS))
+ 		opts->prog_flags |= BPF_F_XDP_HAS_FRAGS;
+@@ -7441,12 +7468,23 @@
+ 	}
+ 	load_attr.log_level = log_level;
+ 	load_attr.prog_flags = prog->prog_flags;
++	if (prog->type == BPF_PROG_TYPE_STRUCT_OPS)
++		load_attr.prog_flags &= ~BPF_F_SLEEPABLE;
+ 	load_attr.fd_array = obj->fd_array;
+ 
+ 	load_attr.token_fd = obj->token_fd;
+ 	if (obj->token_fd)
+ 		load_attr.prog_flags |= BPF_F_TOKEN_FD;
+ 
++	if (prog->type == BPF_PROG_TYPE_TRACING &&
++	    (prog->expected_attach_type == BPF_TRACE_FENTRY ||
++	     prog->expected_attach_type == BPF_TRACE_FEXIT ||
++	     prog->expected_attach_type == BPF_MODIFY_RETURN)) {
++		pr_warn("prog '%s': fentry cannot attach on this kernel, not loaded\n", prog->name);
++		prog->autoload = false;
++		return 0;
++	}
++
+ 	/* adjust load_attr if sec_def provides custom preload callback */
+ 	if (prog->sec_def && prog->sec_def->prog_prepare_load_fn) {
+ 		err = prog->sec_def->prog_prepare_load_fn(prog, &load_attr, prog->sec_def->cookie);

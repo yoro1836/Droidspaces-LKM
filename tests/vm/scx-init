@@ -63,7 +63,9 @@ grep -q disabled /sys/kernel/sched_ext/state && [ "$(cat /sys/devices/system/cpu
 # them, and do they run. Reported, not counted.
 for s in /scx_*; do
     case $s in /scx_simple|/scx-*|*.o) continue;; esac
-    /scx-run $s > /try.log 2>&1 & try=$!
+    # the Rust loaders keep libbpf's messages to themselves unless asked
+    args=; case $s in /scx_bpfland|/scx_lavd) args=-v;; esac
+    /scx-run $s $args > /try.log 2>&1 & try=$!
     # the verifier walks this kernel's bounded loops round by round, which
     # takes a while under emulation
     i=0; while [ $i -lt 40 ] && ! grep -q enabled /sys/kernel/sched_ext/state; do sleep 1; i=$((i + 1)); done
@@ -71,7 +73,11 @@ for s in /scx_*; do
     state=$(cat /sys/kernel/sched_ext/state)
     kill -INT $try 2>/dev/null; wait $try
     echo "TRY $s: $state after ${i}s"
-    tail -4 /try.log | sed "s/^/TRY| /"
+    grep "BPF program load failed" /try.log | head -2 | sed "s/^/TRY| /"
+    grep -B6 "END PROG LOAD LOG" /try.log | head -8 | sed "s/^/TRY| /"
+    [ "$state" = enabled ] || grep "^; " /try.log | sort | uniq -c | sort -rn | head -14 | sed "s/^/TRY# /"
+    [ "$state" = enabled ] || { wc -l < /try.log; grep -c "^from " /try.log; } | sed "s/^/TRY# lines,forks /"
+    grep -vE "not found in kernel, skipping|^[0-9]+: \\(|^; |DEBUG|created successfully|libbpf: (map|prog|sec|elf|loading|license|looking|Kernel|extern|collecting|relo|struct_ops|unrecognized)" /try.log | tail -5 | sed "s/^/TRY| /"
     [ "$state" = enabled ] || grep -vE "not found in kernel, skipping|fentry cannot attach|associate" /try.log | grep -E "libbpf|error|Error|BUG|invalid|R[0-9]|[0-9]+: \(" | tail -12 | sed "s/^/TRY| /"
 done
 for o in /*.bpf.o; do
