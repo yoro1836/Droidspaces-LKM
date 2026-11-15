@@ -108,6 +108,9 @@ CPUMASK_PATCHES = [
      r'\t\.owner = THIS_MODULE,\n', '', 1),
     ('and so is the destructor of the kptr type',
      r'ARRAY_SIZE\(cpumask_dtors\),\n\s+THIS_MODULE\);', 'ARRAY_SIZE(cpumask_dtors),\n\t\t\t\t\t\t   NULL);', 1),
+    ('6.1 calls a kptr destructor for an empty slot too',
+     r'(__bpf_kfunc void bpf_cpumask_release_dtor\(void \*cpumask\)\n\{\n)',
+     r'\1\tif (!cpumask)\n\t\treturn;\n', 1),
     ('a module has one initcall, which calls cpumask_kfunc_init()',
      r'\nlate_initcall\(cpumask_kfunc_init\);\n', '\n', 1),
 ]

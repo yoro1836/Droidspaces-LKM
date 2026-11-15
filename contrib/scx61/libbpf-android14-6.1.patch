@@ -1,5 +1,5 @@
 diff --git a/src/libbpf.c b/src/libbpf.c
-index 02e75b1..8e02a01 100644
+index 02e75b1..3f946d7 100644
 --- a/src/libbpf.c
 +++ b/src/libbpf.c
 @@ -1533,7 +1533,10 @@ static int init_struct_ops_maps(struct bpf_object *obj, const char *sec_name,
@@ -14,7 +14,38 @@ index 02e75b1..8e02a01 100644
  		map->autoattach = true;
  
  		map->st_ops = calloc(1, sizeof(*map->st_ops));
-@@ -5970,6 +5973,15 @@ static int load_module_btfs(struct bpf_object *obj)
+@@ -3744,6 +3747,30 @@ static int bpf_object__sanitize_and_load_btf(struct bpf_object *obj)
+ 		}
+ 	}
+ 
++	/* android14-6.1: a referenced kptr is tagged "kptr_ref" there, and
++	 * "kptr", which it became in v6.2, means an unreferenced one that
++	 * bpf_kptr_xchg() will not take.
++	 */
++	{
++		int kptr_ref = -1, n;
++
++		n = btf__type_cnt(obj->btf);
++		for (i = 1; i < n; i++) {
++			struct btf_type *t = btf_type_by_id(obj->btf, i);
++
++			if (!btf_is_type_tag(t) ||
++			    strcmp(btf__name_by_offset(obj->btf, t->name_off), "kptr"))
++				continue;
++			if (kptr_ref < 0)
++				kptr_ref = btf__add_str(obj->btf, "kptr_ref");
++			if (kptr_ref < 0)
++				return kptr_ref;
++			/* adding a string may have moved the types */
++			t = btf_type_by_id(obj->btf, i);
++			t->name_off = kptr_ref;
++		}
++	}
++
+ 	sanitize = btf_needs_sanitization(obj);
+ 	if (sanitize) {
+ 		kern_btf = bpf_object__sanitize_btf(obj, obj->btf);
+@@ -5970,6 +5997,15 @@ static int load_module_btfs(struct bpf_object *obj)
  	if (obj->btf_modules_loaded)
  		return 0;
  
@@ -30,7 +61,7 @@ index 02e75b1..8e02a01 100644
  	if (obj->gen_loader)
  		return 0;
  
-@@ -6809,7 +6821,15 @@ bpf_object__relocate_data(struct bpf_object *obj, struct bpf_program *prog)
+@@ -6809,7 +6845,15 @@ bpf_object__relocate_data(struct bpf_object *obj, struct bpf_program *prog)
  				}
  				insn[1].imm = ext->kcfg.data_off;
  			} else /* EXT_KSYM */ {
@@ -47,7 +78,7 @@ index 02e75b1..8e02a01 100644
  					insn[0].src_reg = BPF_PSEUDO_BTF_ID;
  					insn[0].imm = ext->ksym.kernel_btf_id;
  					insn[1].imm = ext->ksym.kernel_btf_obj_fd;
-@@ -8571,6 +8591,11 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+@@ -8571,6 +8615,11 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
  	}
  	load_attr.log_level = log_level;
  	load_attr.prog_flags = prog->prog_flags;
@@ -59,7 +90,7 @@ index 02e75b1..8e02a01 100644
  	load_attr.fd_array = obj->fd_array;
  	err = bpf_object__bind_arena(obj, prog, &load_attr);
  	if (err)
-@@ -8580,6 +8605,20 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+@@ -8580,6 +8629,20 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
  	if (obj->token_fd)
  		load_attr.prog_flags |= BPF_F_TOKEN_FD;
  

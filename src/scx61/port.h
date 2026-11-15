@@ -29,6 +29,9 @@ int scx61_cpumask_init(void);
 /* bpf-fixes.c */
 void scx61_set_hrtimer_running(void *addr);
 
+/* kptr.c */
+int scx61_kptr_init(void);
+
 /* task-kfuncs.c */
 int scx61_task_kfuncs_init(void);
 

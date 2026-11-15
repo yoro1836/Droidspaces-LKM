@@ -129,6 +129,9 @@ static int __init scx_port_init(void)
 	ret = scx61_cpumask_init() ?: scx61_task_kfuncs_init();
 	if (ret)
 		pr_warn("cpumask and task kfuncs: %d, schedulers that use them will not load\n", ret);
+	ret = scx61_kptr_init();
+	if (ret)
+		pr_warn("kptr rules: %d, schedulers that keep cpumasks per task will not load\n", ret);
 	ret = scx61_struct_ops_init();
 	if (ret)
 		pr_err("struct_ops: %d, no scheduler can be loaded\n", ret);

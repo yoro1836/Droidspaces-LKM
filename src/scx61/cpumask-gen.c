@@ -99,6 +99,8 @@ __bpf_kfunc void bpf_cpumask_release(struct bpf_cpumask *cpumask)
 
 __bpf_kfunc void bpf_cpumask_release_dtor(void *cpumask)
 {
+	if (!cpumask)
+		return;
 	bpf_cpumask_release(cpumask);
 }
 CFI_NOSEAL(bpf_cpumask_release_dtor);
