@@ -12,6 +12,10 @@ echo "state=$(cat /sys/kernel/sched_ext/state 2>&1)"
 # our probe sits, as it does on a Galaxy S24.
 echo 1 > /proc/sys/kernel/sched_schedstats
 
+# scx_try=NAME on the kernel command line tries that one scheduler and skips
+# the port tests, which take minutes under emulation.
+only=$(sed -n 's/.*scx_try=\([^ ]*\).*/\1/p' /proc/cmdline)
+if [ -z "$only" ]; then
 /scx-run /scx_simple > /simple.log 2>&1 & simple=$!
 sleep 8
 grep -q enabled /sys/kernel/sched_ext/state && echo "PORT loaded: PASS" || { echo "PORT loaded: FAIL"; result=1; }
@@ -59,16 +63,19 @@ kill -INT $simple 2>/dev/null
 wait $simple
 tail -2 /simple2.log | sed "s/^/PORT| /"
 grep -q disabled /sys/kernel/sched_ext/state && [ "$(cat /sys/devices/system/cpu/online)" = 0-1 ] && echo "PORT cpu hotplug: PASS" || { echo "PORT cpu hotplug: FAIL"; result=1; }
+fi
 # Other upstream schedulers, where built: does this kernel's verifier take
 # them, and do they run. Reported, not counted.
 for s in /scx_*; do
     case $s in /scx_simple|/scx-*|*.o) continue;; esac
+    [ -z "$only" ] || [ "$s" = "/$only" ] || continue
     # the Rust loaders keep libbpf's messages to themselves unless asked
     args=; case $s in /scx_bpfland|/scx_lavd) args=-v;; esac
     /scx-run $s $args > /try.log 2>&1 & try=$!
     # the verifier walks this kernel's bounded loops round by round, which
     # takes a while under emulation
-    i=0; while [ $i -lt 40 ] && ! grep -q enabled /sys/kernel/sched_ext/state; do sleep 1; i=$((i + 1)); done
+    limit=40; [ -z "$only" ] || limit=400
+    i=0; while [ $i -lt $limit ] && ! grep -q enabled /sys/kernel/sched_ext/state; do sleep 1; i=$((i + 1)); done
     sleep 6
     state=$(cat /sys/kernel/sched_ext/state)
     kill -INT $try 2>/dev/null; wait $try

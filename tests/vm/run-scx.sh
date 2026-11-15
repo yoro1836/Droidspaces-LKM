@@ -15,7 +15,7 @@ docker ps >/dev/null
 docker run --rm --platform linux/amd64 -v "$root:/work" \
     -e KERNEL="${DS_SCX_KERNEL:-/work/out/gki/android14-6.1/Image}" \
     -e MODULE="${DS_SCX_MODULE:-/work/out/gki/android14-6.1-scx/droidspaces_scx.ko}" \
-    -e LOG="/work/$log_dir/console.log" \
+    -e LOG="/work/$log_dir/console.log" -e TRY="${DS_SCX_TRY:-}" \
     droidspaces-lkm-vm-cross:local sh -eu -c '
     test -r "$KERNEL" && test -r "$MODULE"
     mkdir -p /tmp/root/bin /tmp/root/dev /tmp/root/proc /tmp/root/sys
@@ -38,7 +38,7 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     timeout 600 qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp 2 \
         -nographic -monitor none -nic none -no-reboot -kernel "$KERNEL" \
         -initrd /tmp/initramfs \
-        -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
+        -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1 ${TRY:+scx_try=$TRY}" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
 grep -aE "^(SCX|PORT|TRY|state=|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
