@@ -107,6 +107,10 @@ ifeq ($(TEST_DEVTMPFS),1)
 obj-m += droidspaces_devtmpfs_fixture.o
 droidspaces_devtmpfs_fixture-y := tests/vm/devtmpfs-fixture.o
 endif
+else ifeq ($(TARGET),btfprobe)
+obj-m := droidspaces_btfprobe.o
+SCX_DIR ?= src/scx61
+droidspaces_btfprobe-y := $(SCX_DIR)/btfprobe.o
 else ifeq ($(TARGET),scx)
 obj-m := droidspaces_scx.o
 SCX_DIR ?= src/scx61
