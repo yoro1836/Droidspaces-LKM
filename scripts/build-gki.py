@@ -21,12 +21,12 @@ def source_hashes(target, source_key='source'):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('target', choices=TARGETS)
-    parser.add_argument('--module', choices=('namespace', 'devtmpfs'), default='namespace',
+    parser.add_argument('--module', choices=('namespace', 'devtmpfs', 'scx'), default='namespace',
                         help='devtmpfs builds the target\'s devtmpfs_source into <kmi>-devtmpfs')
     parser.add_argument('make_args', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     target = TARGETS[args.target]
-    key = 'source' if args.module == 'namespace' else 'devtmpfs_source'
+    key = {'namespace': 'source', 'devtmpfs': 'devtmpfs_source', 'scx': 'scx_source'}[args.module]
     if key not in target:
         parser.error(f'{target["kmi"]} has no {key}')
     source = ROOT / target[key]
@@ -34,6 +34,8 @@ if __name__ == '__main__':
         parser.error(f'missing independent source set: {source}')
     if args.module == 'namespace':
         outname, ko, make = target['kmi'], 'droidspaces_ns.ko', ['TARGET=namespace', f'PORT_DIR={target[key]}']
+    elif args.module == 'scx':
+        outname, ko, make = target['kmi']+'-scx', 'droidspaces_scx.ko', ['TARGET=scx', f'SCX_DIR={target[key]}']
     else:
         outname, ko, make = target['kmi']+'-devtmpfs', 'droidspaces_devtmpfs.ko', ['TARGET=devtmpfs', f'DEVTMPFS_DIR={target[key]}']
     cmd = ['docker', 'run', '--rm', '--platform', 'linux/amd64',

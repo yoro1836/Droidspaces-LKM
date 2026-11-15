@@ -1,0 +1,37 @@
+#!/bin/sh
+# Init of the scx test VM: load the module, run tests/vm/scx.c next to
+# fair and ext load, then look for scheduler complaints.
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+P=/sys/module/droidspaces_scx/parameters
+result=0
+/load-module /scx.ko || { echo DS_SCX_LOAD_FAIL; poweroff -f; }
+ticks() { cut -d' ' -f14 /proc/$1/stat; }
+
+# Three spinners on two CPUs, all in the class: each must keep getting time.
+pids=
+for i in 1 2 3; do sh -c 'while :; do :; done' & pids="$pids $!"; done
+for p in $pids; do echo $p > $P/attach || result=1; done
+sleep 1
+for p in $pids; do eval "t$p=$(ticks $p)"; done
+sleep 3
+for p in $pids; do
+    eval "old=\$t$p"
+    [ $(($(ticks $p) - old)) -gt 50 ] && echo "SCX spinner $p shares: PASS" || { echo "SCX spinner $p shares: FAIL"; result=1; }
+done
+/scx-test || result=1
+# The same again while a fair task hogs a CPU. The class sits below fair, so a
+# task pinned to the hog's CPU waits until the watchdog hands it back to fair.
+# The run then fails its own checks: what counts is that it ends, that the
+# watchdog fired, and that nothing broke.
+sh -c 'while :; do :; done' & hog=$!
+timeout 120 /scx-test >/dev/null
+[ $? -lt 124 ] && [ "$(cat $P/nr_fallbacks)" -gt 0 ] && echo "SCX under fair load: PASS" || { echo "SCX under fair load: FAIL"; result=1; }
+kill $hog $pids
+sleep 1
+echo "attaches=$(cat $P/nr_attaches) picks=$(cat $P/nr_picks) enqueues=$(cat $P/nr_enqueues) pulls=$(cat $P/nr_pulls) fallbacks=$(cat $P/nr_fallbacks)"
+[ "$(cat $P/nr_picks)" -gt 1000 ] || result=1
+dmesg | grep -E 'droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall'
+echo "DS_SCX_VM_RESULT=$result"
+poweroff -f

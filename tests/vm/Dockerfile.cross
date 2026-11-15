@@ -1,0 +1,7 @@
+# The VM test image for hosts without arm64 binfmt: QEMU runs natively, the
+# test programs are cross-compiled, and only busybox is an arm64 binary.
+FROM debian:bookworm-slim
+RUN dpkg --add-architecture arm64 && apt-get update && \
+    apt-get install -y --no-install-recommends qemu-system-arm cpio \
+    gcc-aarch64-linux-gnu libc6-dev-arm64-cross busybox-static:arm64 \
+    && rm -rf /var/lib/apt/lists/*

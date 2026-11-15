@@ -107,6 +107,14 @@ ifeq ($(TEST_DEVTMPFS),1)
 obj-m += droidspaces_devtmpfs_fixture.o
 droidspaces_devtmpfs_fixture-y := tests/vm/devtmpfs-fixture.o
 endif
+else ifeq ($(TARGET),scx)
+obj-m := droidspaces_scx.o
+SCX_DIR ?= src/scx61
+droidspaces_scx-y := $(SCX_DIR)/main.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
+ifneq ($(GKI_ANDROID),)
+ccflags-y += -DDS_GKI_ANDROID='"$(GKI_ANDROID)"' -DDS_GKI_VERSION='"$(GKI_VERSION)"'
+endif
+ccflags-y += -I$(srctree)
 else
 obj-m := droidspaces_probe.o
 droidspaces_probe-y := src/probe.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
