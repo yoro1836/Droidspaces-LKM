@@ -1,0 +1,43 @@
+--- a/scheds/rust/scx_lavd/src/bpf/util.bpf.c
++++ b/scheds/rust/scx_lavd/src/bpf/util.bpf.c
+@@ -257,17 +257,33 @@
+ 	return (stat_cur->nr_active + LAVD_CC_NR_OVRFLW) >= nr_cpus_onln;
+ }
+ 
++/*
++ * scx61: the same answer as scanning from bit nuance % 64 upwards, without
++ * the loop. Kernels before v6.4 verify a 64-round bpf_for() round by round,
++ * which put lavd_dispatch() past their limit of a million instructions.
++ * Rotate the bitmap so the scan starts at bit 0, then count the zeroes below
++ * the lowest set bit. barrier_var() keeps clang from turning this into
++ * rotate and popcount, which its BPF backend cannot emit.
++ */
+ static u64 pick_any_bit(u64 bitmap, u64 nuance)
+ {
+-	u64 i, pos;
++	u64 n = nuance % 64, v;
+ 
+-	bpf_for(i, 0, 64) {
+-		pos = (i + nuance) % 64;
+-		if (bitmap & (1LLU << pos))
+-			return pos;
+-	}
++	if (!bitmap)
++		return -ENOENT;
+ 
+-	return -ENOENT;
++	v = bitmap >> n;
++	barrier_var(v);
++	v |= bitmap << ((64 - n) & 63);
++	v = (v & -v) - 1;
++	barrier_var(v);
++	v = v - ((v >> 1) & 0x5555555555555555ULL);
++	v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
++	v = (v + (v >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
++	barrier_var(v);
++	v = (v * 0x0101010101010101ULL) >> 56;
++
++	return (v + n) % 64;
+ }
+ 
+ static void set_on_core_type(struct task_ctx *taskc,

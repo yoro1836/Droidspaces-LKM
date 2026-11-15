@@ -29,6 +29,13 @@ arm64=${SCX61_ARM64:?directory with static arm64 libelf, libz and libzstd}
 manifest=$scx/scheds/rust/$name/Cargo.toml
 target=aarch64-unknown-linux-gnu
 
+# A scheduler that this verifier cannot take as it is has a patch here,
+# NAME-VERSION.patch, which keeps what it computes and changes how.
+for p in "$here/$name"-*.patch; do
+    [ -f "$p" ] || continue
+    patch -d "$scx" -p1 -N -s --dry-run < "$p" >/dev/null 2>&1 && patch -d "$scx" -p1 -N -s < "$p"
+done
+
 cargo fetch --manifest-path "$manifest" --target $target
 sys=$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/libbpf-sys-1.4.6* | head -1)
 if ! grep -q 'android14-6.1' "$sys/libbpf/src/libbpf.c"; then
