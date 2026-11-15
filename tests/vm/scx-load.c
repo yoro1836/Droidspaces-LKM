@@ -43,6 +43,7 @@ int main(int argc, char **argv)
 {
 	struct bpf_object *obj;
 	struct bpf_map *map;
+	const char *merged = "/data/local/tmp/scx-merged.btf";
 	struct bpf_link *link;
 	int seconds;
 
@@ -51,9 +52,12 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	seconds = atoi(argv[2]);
+	/* Android's root is read-only, the test VM has nothing but its root. */
+	if (copy("/sys/module/droidspaces_scx/btf", merged))
+		merged = "/scx-merged.btf";
 	if (unshare(CLONE_NEWNS) || mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) ||
-	    copy("/sys/module/droidspaces_scx/btf", "/scx-merged.btf") ||
-	    mount("/scx-merged.btf", "/sys/kernel/btf/vmlinux", NULL, MS_BIND, NULL)) {
+	    copy("/sys/module/droidspaces_scx/btf", merged) ||
+	    mount(merged, "/sys/kernel/btf/vmlinux", NULL, MS_BIND, NULL)) {
 		perror("merged BTF");
 		return 1;
 	}
