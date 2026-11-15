@@ -26,6 +26,8 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     # Built by contrib/scx61/build-upstream.sh. scx_simple is the test; any
     # other scheduler found there is tried and reported on.
     for s in /work/out/scx/upstream/scx_*; do case $s in *.o) ;; *) cp $s /tmp/root/;; esac; done
+    # Objects to put before the verifier only, with contrib/scx61/scx-probe.
+    if [ -d /work/out/scx/probe ]; then cp /work/out/scx/probe/* /tmp/root/; fi
     cp "$MODULE" /tmp/root/scx.ko
     cp /work/tests/vm/scx-init /tmp/root/init
     chmod +x /tmp/root/init
