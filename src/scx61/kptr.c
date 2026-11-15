@@ -334,24 +334,45 @@ static struct kprobe selem_unlink_kp = {
 	.pre_handler = selem_unlink_pre,
 };
 
-/* The verifier forgets a checkpoint that was compared four times without a
- * match. A v6.4 one walks a bpf_for() once, as an iterator; this one walks
- * every round, each round's checkpoint differs from the others' by the
- * counter, so they all miss each other and are dropped before the paths that
- * would have ended at them come back. Those paths are then walked again in
- * full, and a scheduler with nested loops (scx_lavd's dispatch) never
- * finishes. states_equal(env, old, cur) is where a miss is found, and old
- * always sits in the list entry that keeps the two counts, so the entry is
- * given hits it cannot outnumber.
+/* The verifier gives up after a million instructions walked. A v6.4 one
+ * walks a bpf_for() once, as an iterator; this one walks every round, so a
+ * scheduler that is small upstream runs out here (scx_lavd's dispatch does).
+ * The limit only bounds how long verification takes, every path is still
+ * checked, so a scheduler gets a larger one: the count is wound back as it
+ * nears the limit, up to SCX61_INSN_BUDGET in all. states_equal(env, ...)
+ * is where to see it from, the verifier asks it at every checkpoint.
  */
+#define SCX61_INSN_BUDGET (16U << 20)
+#define SCX61_INSN_STEP (1U << 19)
+static struct { struct bpf_verifier_env *env; u32 given; } insn_budget[4];
+static unsigned int insn_budget_next;
+static DEFINE_SPINLOCK(insn_budget_lock);
+
 static int states_equal_pre(struct kprobe *kp, struct pt_regs *regs)
 {
 	struct bpf_verifier_env *env = (void *)regs->regs[0];
-	struct bpf_verifier_state_list *sl =
-		container_of((struct bpf_verifier_state *)regs->regs[1], typeof(*sl), state);
+	unsigned int i;
 
-	if (env->prog->type == BPF_PROG_TYPE_STRUCT_OPS && sl->hit_cnt < (1 << 20))
-		sl->hit_cnt += 1 << 20;
+	if (env->prog->type != BPF_PROG_TYPE_STRUCT_OPS || env->insn_processed < 3 * SCX61_INSN_STEP / 2)
+		return 0;
+	spin_lock(&insn_budget_lock);
+	for (i = 0; i < ARRAY_SIZE(insn_budget); i++)
+		if (insn_budget[i].env == env)
+			break;
+	/* A program verified at the address of an earlier one reaches this
+	 * with an entry that has given some already: at worst it gets less.
+	 */
+	if (i == ARRAY_SIZE(insn_budget)) {
+		i = insn_budget_next++ % ARRAY_SIZE(insn_budget);
+		insn_budget[i].env = env;
+		insn_budget[i].given = 0;
+	}
+	if (insn_budget[i].given < SCX61_INSN_BUDGET) {
+		insn_budget[i].given += SCX61_INSN_STEP;
+		env->insn_processed -= SCX61_INSN_STEP;
+		env->prev_insn_processed -= min(env->prev_insn_processed, SCX61_INSN_STEP);
+	}
+	spin_unlock(&insn_budget_lock);
 	return 0;
 }
 
@@ -470,7 +491,7 @@ int __init scx61_kptr_init(void)
 
 	/* Small schedulers verify without it. */
 	if (register_kprobe(&states_equal_kp))
-		pr_warn("droidspaces_scx: verifier checkpoints are not kept, large schedulers will not load\n");
+		pr_warn("droidspaces_scx: no larger verifier budget, large schedulers will not load\n");
 	ret = register_kprobe(&map_check_btf_kp);
 	if (ret)
 		return ret;

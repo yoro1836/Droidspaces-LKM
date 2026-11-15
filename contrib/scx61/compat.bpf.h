@@ -13,16 +13,18 @@
 #define __SCX61_COMPAT_BPF_H
 
 /* A loop to a bound the verifier cannot see, such as the weight of a cpumask,
- * never ends for it, and one to a large constant with branches in its body
- * overruns its limit of 8192 pending branches. So a bpf_for() runs for
- * SCX61_FOR_MAX rounds at most. Schedulers loop over CPUs, of which a phone
- * has far fewer; build with -DSCX61_FOR_MAX=N for a machine with more.
+ * never ends for it. So a bpf_for() to anything but a constant runs for
+ * SCX61_FOR_MAX rounds at most. Schedulers loop to the number of CPUs, of
+ * which a phone has far fewer; build with -DSCX61_FOR_MAX=N for a machine
+ * with more. A constant bound is the scheduler's own and is kept: capping
+ * scx_lavd's 64-bit scan in pick_any_bit() made it miss bits.
  */
 #ifndef SCX61_FOR_MAX
 #define SCX61_FOR_MAX 64
 #endif
-#define bpf_for(i, start, end) \
-	for ((i) = (start); (i) < (end) && (i) < (start) + SCX61_FOR_MAX; (i)++)
+#define bpf_for(i, start, end)							\
+	for ((i) = (start); (i) < (end) &&					\
+	     (__builtin_constant_p(end) || (i) < (start) + SCX61_FOR_MAX); (i)++)
 
 /* bpf_for_each() over a typed iterator, such as the tasks of a DSQ. The
  * iterator kfuncs are there (upstream's ext.c brings its own), but to this
