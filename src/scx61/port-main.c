@@ -84,13 +84,15 @@ static int __init scx_port_init(void)
 	 * for sure, and guessing it would have us write into EMS's data.
 	 */
 	if (kallsyms_name_to_addr("tex_replace_next_task_fair")) {
-		ret = scx61_module_member_offset("ems", "ems_task_struct", "qjump_node");
-		if (ret < 0) {
+		int node = scx61_module_member_offset("ems", "ems_task_struct", "qjump_node");
+		int nr_tex = scx61_module_member_offset("ems", "_rq_avd1", "nr_tex");
+
+		if (node < 0 || nr_tex < 0) {
 			pr_err("Samsung EMS without BTF: cannot coexist with it\n");
 			return -EOPNOTSUPP;
 		}
-		pr_info("Samsung EMS: queue jump node at vendor data +%d\n", ret);
-		scx61_set_ems_qjump(offsetof(struct task_struct, android_vendor_data1) + ret);
+		pr_info("Samsung EMS: queue jump node at +%d, count at +%d\n", node, nr_tex);
+		scx61_set_ems_qjump(offsetof(struct task_struct, android_vendor_data1) + node, nr_tex);
 	}
 
 	/* Types first: upstream registers kfuncs by BTF id. Nothing of the

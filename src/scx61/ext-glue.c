@@ -242,22 +242,30 @@ void scx61_update_curr(struct rq *rq)
  * put. EMS's hook runs before ours, so the task is taken off its list again
  * right there. The list node is found through EMS's own BTF, see port-main.c.
  */
-static int scx61_ems_qjump = -1;
+static int scx61_ems_qjump = -1, scx61_ems_nr_tex;
 
-void scx61_set_ems_qjump(int offset)
+void scx61_set_ems_qjump(int node_offset, int nr_tex_offset)
 {
-	scx61_ems_qjump = offset;
+	scx61_ems_nr_tex = nr_tex_offset;
+	scx61_ems_qjump = node_offset;
 }
 
-static void scx61_ems_forget(struct task_struct *p)
+/* What EMS's tex_remove_from_qjump_list() does: unlink, and one less in the
+ * count it keeps in the rq's vendor data, whose first word points to it.
+ */
+static void scx61_ems_forget(struct rq *rq, struct task_struct *p)
 {
 	struct list_head *node;
+	void *rq_data = (void *)rq->android_vendor_data1[0];
 
 	if (scx61_ems_qjump < 0)
 		return;
 	node = (void *)p + scx61_ems_qjump;
-	if (node->next && !list_empty(node))
-		list_del_init(node);
+	if (!node->next || list_empty(node))
+		return;
+	list_del_init(node);
+	if (rq_data)
+		*(int *)(rq_data + scx61_ems_nr_tex) -= 1;
 }
 
 /* The idle class has no enqueue_task, and the core calls it unconditionally.
@@ -272,7 +280,7 @@ static void scx61_rvh_enqueue(void *unused, struct rq *rq, struct task_struct *p
 	scx61_flush_put(rq, NULL);
 	if (!task_is_scx(p))
 		return;
-	scx61_ems_forget(p);
+	scx61_ems_forget(rq, p);
 	enqueue_task_scx(rq, p, flags);
 	per_cpu(scx61_lent, cpu_of(rq)) = p;
 	p->sched_class = &stop_sched_class;
