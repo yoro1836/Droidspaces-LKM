@@ -1,6 +1,8 @@
 Source: Linux stable, branch linux-6.12.y (github.com/gregkh/linux), fetched 2026-11-15
 These files are kept exactly as upstream has them. The module does not compile
-them directly: scripts/gen-scx61.py turns ext.c into the android14-6.1 port.
+them directly: scripts/gen-scx61.py turns ext.c into the android14-6.1 port,
+and cpumask.c into the cpumask kfuncs, which arrived in v6.3 and which nearly
+every scheduler calls.
 
 6.12 is the oldest release the sched-ext/scx headers still wrap (the kfuncs are
 scx_bpf_dispatch and scx_bpf_consume there), so schedulers built from current
@@ -10,3 +12,4 @@ SHA-256:
 98011718c1ac5b6231acc2f9e1bafc5c6d5f408e829269a74523307022968954  ext.c        (kernel/sched/ext.c)
 f6673b5e85e1d5b4545c6396c2fe80f9828a16e350d2e61ca53d65e0a2013ec1  ext.h        (kernel/sched/ext.h)
 3c23dcf47208740c18a72617daa5cfbc516ce6bbdfe3ae6eead90bbee3c01eae  sched_ext.h  (include/linux/sched/ext.h)
+485dc397aa3aea23d561996ae7faee5d2ed6f4d51bd4c20d2d32270e0840a403  cpumask.c    (kernel/bpf/cpumask.c)

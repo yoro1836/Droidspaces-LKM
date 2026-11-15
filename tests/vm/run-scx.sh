@@ -23,8 +23,9 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     for a in $(cat /work/tests/vm/busybox-applets); do test "$a" = busybox || ln -s busybox /tmp/root/bin/$a; done
     aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror /work/tests/vm/load-module.c -o /tmp/root/load-module
     aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror /work/contrib/scx61/scx-run.c -o /tmp/root/scx-run
-    # Built by contrib/scx61/build-upstream.sh.
-    cp /work/out/scx/upstream/scx_simple /tmp/root/
+    # Built by contrib/scx61/build-upstream.sh. scx_simple is the test; any
+    # other scheduler found there is tried and reported on.
+    for s in /work/out/scx/upstream/scx_*; do case $s in *.o) ;; *) cp $s /tmp/root/;; esac; done
     cp "$MODULE" /tmp/root/scx.ko
     cp /work/tests/vm/scx-init /tmp/root/init
     chmod +x /tmp/root/init
@@ -32,13 +33,13 @@ docker run --rm --platform linux/amd64 -v "$root:/work" \
     mknod /tmp/root/dev/null c 1 3
     cd /tmp/root
     find . -print0 | cpio --null -o -H newc >/tmp/initramfs
-    timeout 300 qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp 2 \
+    timeout 500 qemu-system-aarch64 -machine virt -cpu max -m 1024 -smp 2 \
         -nographic -monitor none -nic none -no-reboot -kernel "$KERNEL" \
         -initrd /tmp/initramfs \
         -append "console=ttyAMA0 rdinit=/init nokaslr selinux=0 panic=-1" >"$LOG" 2>&1
     ' || true
 log="$root/$log_dir/console.log"
-grep -aE "^(SCX|PORT|state=|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
+grep -aE "^(SCX|PORT|TRY|state=|attaches=|kfunc_errors=|DS_SCX|libbpf)" "$log" || true
 if ! grep -q "^DS_SCX_VM_RESULT=0" "$log" ||
    grep -Eq "WARNING: CPU:|BUG:|Oops:|Kernel panic|bad: scheduling|Unable to handle|rcu.*stall" "$log"; then
     tail -80 "$log"; exit 1

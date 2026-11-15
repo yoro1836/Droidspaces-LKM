@@ -59,6 +59,21 @@ kill -INT $simple 2>/dev/null
 wait $simple
 tail -2 /simple2.log | sed "s/^/PORT| /"
 grep -q disabled /sys/kernel/sched_ext/state && [ "$(cat /sys/devices/system/cpu/online)" = 0-1 ] && echo "PORT cpu hotplug: PASS" || { echo "PORT cpu hotplug: FAIL"; result=1; }
+# Other upstream schedulers, where built: does this kernel's verifier take
+# them, and do they run. Reported, not counted.
+for s in /scx_*; do
+    [ $s = /scx_simple ] && continue
+    /scx-run $s > /try.log 2>&1 & try=$!
+    # the verifier walks this kernel's bounded loops round by round, which
+    # takes a while under emulation
+    i=0; while [ $i -lt 40 ] && ! grep -q enabled /sys/kernel/sched_ext/state; do sleep 1; i=$((i + 1)); done
+    sleep 6
+    state=$(cat /sys/kernel/sched_ext/state)
+    kill -INT $try 2>/dev/null; wait $try
+    echo "TRY $s: $state after ${i}s"
+    tail -4 /try.log | sed "s/^/TRY| /"
+    [ "$state" = enabled ] || grep -vE "not found in kernel, skipping|fentry cannot attach|associate" /try.log | grep -E "libbpf|error|Error|BUG|invalid|R[0-9]|[0-9]+: \(" | tail -12 | sed "s/^/TRY| /"
+done
 dmesg | grep -E 'sched_ext|droidspaces|BUG|WARNING|Oops|panic|bad: scheduling|rcu.*stall' | tail -30
 dmesg | grep -q 'ran without having been picked' && { echo 'PORT every running task was set: FAIL'; result=1; } || echo 'PORT every running task was set: PASS'
 echo "DS_SCX_VM_RESULT=$result"

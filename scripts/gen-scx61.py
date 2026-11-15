@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / 'src/scx61/upstream'
 OUT = ROOT / 'src/scx61'
-FILES = {'ext.c': 'ext-gen.c', 'ext.h': 'ext-gen.h'}
+FILES = {'ext.c': 'ext-gen.c', 'ext.h': 'ext-gen.h', 'cpumask.c': 'cpumask-gen.c'}
 
 # An rq is spelled as a variable that ends in rq or as one of these calls.
 RQ = r'(?:\w*rq|cpu_rq\([^()]*\)|this_rq\(\)|task_rq\([^()]*\))'
@@ -103,8 +103,18 @@ PATCHES = [
 ]
 
 
-def convert_c(text):
-    for what, pattern, repl, count in PATCHES:
+CPUMASK_PATCHES = [
+    ('kfuncs are found through the merged vmlinux BTF, so the set has no owner',
+     r'\t\.owner = THIS_MODULE,\n', '', 1),
+    ('and so is the destructor of the kptr type',
+     r'ARRAY_SIZE\(cpumask_dtors\),\n\s+THIS_MODULE\);', 'ARRAY_SIZE(cpumask_dtors),\n\t\t\t\t\t\t   NULL);', 1),
+    ('a module has one initcall, which calls cpumask_kfunc_init()',
+     r'\nlate_initcall\(cpumask_kfunc_init\);\n', '\n', 1),
+]
+
+
+def convert_c(text, patches=None):
+    for what, pattern, repl, count in (PATCHES if patches is None else patches):
         text, n = re.subn(pattern, repl, text)
         if n != count:
             sys.exit('gen-scx61: "%s" matched %d times, expected %d' % (what, n, count))
@@ -114,8 +124,10 @@ def convert_c(text):
 if __name__ == '__main__':
     for src, dst in FILES.items():
         out = convert(UP.joinpath(src).read_text())
-        if src.endswith('.c'):
+        if src == 'ext.c':
             out = convert_c(out)
+        elif src == 'cpumask.c':
+            out = convert_c(out, CPUMASK_PATCHES)
         left = [i + 1 for i, line in enumerate(out.splitlines())
                 if re.search(r'->scx\b|\bscx\.\w+\)', line) and not line.lstrip().startswith('*')]
         OUT.joinpath(dst).write_text(

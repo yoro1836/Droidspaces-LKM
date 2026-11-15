@@ -13,13 +13,14 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 scx=$(cd "$1" && pwd) libbpf=$(cd "$2" && pwd) src=$(cd "$3" && pwd) name=$4
 mkdir -p "$5"; out=$(cd "$5" && pwd)
 docker build -q --platform linux/amd64 -t droidspaces-scx-build:local "$here" >/dev/null
-docker run --rm --platform linux/amd64 -v "$scx:/scx:ro" -v "$libbpf:/libbpf:ro" \
+docker run --rm --platform linux/amd64 -v "$scx:/scx:ro" -v "$libbpf:/libbpf:ro" -v "$here:/here:ro" \
     -v "$src:/src:ro" -v "$out:/out" -e NAME="$name" droidspaces-scx-build:local sh -eu -c '
     cp -r /libbpf /tmp/libbpf
     make -s -C /tmp/libbpf/src CC=aarch64-linux-gnu-gcc BUILD_STATIC_ONLY=1 OBJDIR=/tmp/lbobj \
         DESTDIR=/tmp/lb PREFIX=/usr LIBDIR=/usr/lib EXTRA_CFLAGS=-I/arm64/include install >/dev/null
     inc="-I/scx/scheds/include -I/scx/scheds/include/bpf-compat -I/tmp/lb/usr/include"
     clang -O2 -g -target bpf -D__TARGET_ARCH_arm64 -mcpu=v3 -Wno-compare-distinct-pointer-types \
+        -include /here/compat.bpf.h \
         $inc -I/scx/scheds/vmlinux/arch/arm64 -c /src/$NAME.bpf.c -o /tmp/$NAME.tmp.o
     bpftool gen object /out/$NAME.bpf.o /tmp/$NAME.tmp.o
     bpftool gen skeleton /out/$NAME.bpf.o name $NAME > /tmp/$NAME.bpf.skel.h

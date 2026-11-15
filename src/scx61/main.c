@@ -30,6 +30,9 @@ void scx61_check_preempt_curr(struct rq *rq, struct task_struct *p, int flags);
 void scx61_task_tick(struct rq *rq, struct task_struct *curr, int queued);
 int scx61_select_task_rq(struct task_struct *p, int prev_cpu, int wake_flags);
 void scx61_update_curr(struct rq *rq);
+struct hrtimer;
+int scx61_bpf_timer_cb(struct hrtimer *hrtimer);
+u64 scx61_bpf_loop(u64 nr_loops, u64 callback_fn, u64 callback_ctx, u64 flags, u64 r5);
 
 struct scx_kprobe {
 	struct kprobe kp;
@@ -54,6 +57,9 @@ static struct scx_kprobe kps[] = {
 	SCX_KP("task_tick_idle", scx61_task_tick),
 	SCX_KP("select_task_rq_idle", scx61_select_task_rq),
 	SCX_KP("update_curr_idle", scx61_update_curr),
+	/* see bpf-fixes.c */
+	SCX_KP("bpf_timer_cb", scx61_bpf_timer_cb),
+	SCX_KP("bpf_loop", scx61_bpf_loop),
 };
 
 static int __init scx_port_init(void)
@@ -117,6 +123,12 @@ static int __init scx_port_init(void)
 		pr_err("sched_ext core: %d\n", ret);
 		return ret;
 	}
+	scx61_set_hrtimer_running((void *)kallsyms_name_to_addr("hrtimer_running"));
+	if (!kallsyms_name_to_addr("hrtimer_running"))
+		return -ENOENT;
+	ret = scx61_cpumask_init() ?: scx61_task_kfuncs_init();
+	if (ret)
+		pr_warn("cpumask and task kfuncs: %d, schedulers that use them will not load\n", ret);
 	ret = scx61_struct_ops_init();
 	if (ret)
 		pr_err("struct_ops: %d, no scheduler can be loaded\n", ret);
