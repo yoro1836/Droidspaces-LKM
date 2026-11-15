@@ -69,7 +69,32 @@ struct bpf_struct_ops_sched_ext_ops {
 	struct sched_ext_ops data ____cacheline_aligned_in_smp;
 };
 
+/* Never used: its member puts the name "scx" into this module's BTF strings,
+ * for the task_struct member the merged BTF gains below.
+ */
+struct scx_btf_anchor {
+	struct sched_ext_entity scx;
+};
+
 static struct sched_ext_ops __rcu *scx_ops;
+/* Set by a kfunc the scheduler misused: it is no longer asked anything, the
+ * class runs on its defaults, and exit() reports why once it is unloaded.
+ */
+static bool scx_errored;
+static char scx_error_msg[96];
+
+void scx_ops_error(const char *msg)
+{
+	if (cmpxchg(&scx_errored, false, true))
+		return;
+	strscpy(scx_error_msg, msg, sizeof(scx_error_msg));
+	pr_err("BPF scheduler error: %s\n", scx_error_msg);
+}
+
+static struct sched_ext_ops *ops_get(void)
+{
+	return READ_ONCE(scx_errored) ? NULL : rcu_dereference(scx_ops);
+}
 static unsigned long nr_ops_calls;
 module_param(nr_ops_calls, ulong, 0400);
 
@@ -82,7 +107,7 @@ __nocfi s32 scx_ops_select_cpu(struct task_struct *p, s32 prev_cpu, u64 wake_fla
 	s32 cpu = -1;
 
 	rcu_read_lock();
-	ops = rcu_dereference(scx_ops);
+	ops = ops_get();
 	if (ops && ops->select_cpu) {
 		cpu = ops->select_cpu(p, prev_cpu, wake_flags);
 		nr_ops_calls++;
@@ -100,7 +125,7 @@ __nocfi bool scx_ops_enqueue(struct task_struct *p, u64 enq_flags)
 	bool has;
 
 	rcu_read_lock();
-	ops = rcu_dereference(scx_ops);
+	ops = ops_get();
 	has = ops && ops->enqueue;
 	if (has)
 		ops->enqueue(p, enq_flags);
@@ -114,7 +139,7 @@ __nocfi bool scx_ops_dispatch(s32 cpu)
 	bool has;
 
 	rcu_read_lock();
-	ops = rcu_dereference(scx_ops);
+	ops = ops_get();
 	has = ops && ops->dispatch;
 	if (has)
 		ops->dispatch(cpu, NULL);
@@ -127,7 +152,7 @@ __nocfi void scx_ops_running(struct task_struct *p)
 	struct sched_ext_ops *ops;
 
 	rcu_read_lock();
-	ops = rcu_dereference(scx_ops);
+	ops = ops_get();
 	if (ops && ops->running)
 		ops->running(p);
 	rcu_read_unlock();
@@ -138,10 +163,45 @@ __nocfi void scx_ops_stopping(struct task_struct *p, bool runnable)
 	struct sched_ext_ops *ops;
 
 	rcu_read_lock();
-	ops = rcu_dereference(scx_ops);
+	ops = ops_get();
 	if (ops && ops->stopping)
 		ops->stopping(p, runnable);
 	rcu_read_unlock();
+}
+
+__nocfi void scx_ops_enable(struct task_struct *p)
+{
+	struct sched_ext_ops *ops;
+
+	rcu_read_lock();
+	ops = ops_get();
+	if (ops && ops->enable)
+		ops->enable(p);
+	rcu_read_unlock();
+}
+
+static const struct btf_type *task_struct_type;
+static int (*btf_struct_access_fn)(struct bpf_verifier_log *, const struct btf *,
+				   const struct btf_type *, int, int, enum bpf_access_type,
+				   u32 *, enum bpf_type_flag *);
+
+/* Reads are the kernel's business. Of writes, a scheduler may set a task's
+ * slice and vtime, as upstream allows through p->scx.
+ */
+static __nocfi int scx_btf_struct_access(struct bpf_verifier_log *log, const struct btf *btf,
+					 const struct btf_type *t, int off, int size,
+					 enum bpf_access_type atype, u32 *next_btf_id,
+					 enum bpf_type_flag *flag)
+{
+	int base = offsetof(struct task_struct, dl.dl_runtime);
+
+	if (atype == BPF_READ)
+		return btf_struct_access_fn(log, btf, t, off, size, atype, next_btf_id, flag);
+	if (t == task_struct_type && size == sizeof(u64) &&
+	    (off == base + offsetof(struct sched_ext_entity, slice) ||
+	     off == base + offsetof(struct sched_ext_entity, dsq_vtime)))
+		return SCALAR_VALUE;
+	return -EACCES;
 }
 
 static bool (*btf_ctx_access_fn)(int, int, enum bpf_access_type, const struct bpf_prog *,
@@ -171,6 +231,7 @@ scx_get_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 static const struct bpf_verifier_ops scx_verifier_ops = {
 	.is_valid_access = scx_is_valid_access,
 	.get_func_proto = scx_get_func_proto,
+	.btf_struct_access = scx_btf_struct_access,
 };
 
 static int scx_init_member(const struct btf_type *t, const struct btf_member *member,
@@ -179,9 +240,30 @@ static int scx_init_member(const struct btf_type *t, const struct btf_member *me
 	const struct sched_ext_ops *uops = udata;
 	struct sched_ext_ops *ops = kdata;
 
-	if (__btf_member_bit_offset(t, member) / 8 == offsetof(struct sched_ext_ops, name)) {
+	u32 moff = __btf_member_bit_offset(t, member) / 8;
+
+	/* The generic code takes the function pointers and wants every other
+	 * member to be zero unless it is claimed here.
+	 */
+	switch (moff) {
+	case offsetof(struct sched_ext_ops, name):
 		if (strscpy(ops->name, uops->name, sizeof(ops->name)) <= 0)
 			return -EINVAL;
+		return 1;
+	case offsetof(struct sched_ext_ops, dispatch_max_batch):
+		ops->dispatch_max_batch = uops->dispatch_max_batch;
+		return 1;
+	case offsetof(struct sched_ext_ops, flags):
+		ops->flags = uops->flags;
+		return 1;
+	case offsetof(struct sched_ext_ops, timeout_ms):
+		ops->timeout_ms = uops->timeout_ms;
+		return 1;
+	case offsetof(struct sched_ext_ops, exit_dump_len):
+		ops->exit_dump_len = uops->exit_dump_len;
+		return 1;
+	case offsetof(struct sched_ext_ops, hotplug_seq):
+		ops->hotplug_seq = uops->hotplug_seq;
 		return 1;
 	}
 	return 0;
@@ -206,20 +288,29 @@ static __nocfi int scx_reg(void *kdata)
 		mutex_unlock(&scx_reg_lock);
 		return ret > 0 ? -EINVAL : ret;
 	}
+	WRITE_ONCE(scx_errored, false);
 	rcu_assign_pointer(scx_ops, ops);
 	mutex_unlock(&scx_reg_lock);
 	pr_info("BPF scheduler \"%s\" enabled\n", ops->name);
 	return 0;
 }
 
-static void scx_unreg(void *kdata)
+static __nocfi void scx_unreg(void *kdata)
 {
 	struct sched_ext_ops *ops = kdata;
+	static struct scx_exit_info ei;
 
 	mutex_lock(&scx_reg_lock);
 	rcu_assign_pointer(scx_ops, NULL);
 	synchronize_rcu();
 	scx_ops_gone();
+	if (ops->exit) {
+		ei.kind = scx_errored ? SCX_EXIT_ERROR_BPF : SCX_EXIT_UNREG;
+		ei.reason = scx_errored ? "scx_bpf_error" : "unregistered from user space";
+		ei.msg = scx_errored ? scx_error_msg : "";
+		ei.dump = "";
+		ops->exit(&ei);
+	}
 	mutex_unlock(&scx_reg_lock);
 	pr_info("BPF scheduler \"%s\" disabled\n", ops->name);
 }
@@ -255,9 +346,10 @@ static int graft_btf(void)
 	struct mutex *lock = (void *)kallsyms_name_to_addr("btf_module_mutex");
 	struct ds_btf **vmp = (void *)kallsyms_name_to_addr("btf_vmlinux");
 	struct ds_btf_module *m;
+	u32 vt, vs, mt, ms, i, extra = 0, split = 0, entity_id = 0, scx_name_off = 0;
 	struct btf_header *hdr;
-	u32 vt, vs, mt, ms;
-	char *blob;
+	void *base_types;
+	char *blob, *out;
 
 	if (!modules || !lock || !vmp || !*vmp)
 		return -ENOENT;
@@ -286,7 +378,7 @@ static int graft_btf(void)
 
 	new_types = kvcalloc(vm_btf->nr_types + mod_btf->nr_types, sizeof(*new_types), GFP_KERNEL);
 	new_strings = kvmalloc(vs + ms, GFP_KERNEL);
-	blob = kvzalloc(sizeof(*hdr) + vt + mt + vs + ms, GFP_KERNEL);
+	blob = kvzalloc(sizeof(*hdr) + vt + mt + vs + ms + sizeof(struct btf_member), GFP_KERNEL);
 	if (!new_types || !new_strings || !blob)
 		return -ENOMEM;
 	memcpy(new_types, vm_btf->types, vm_btf->nr_types * sizeof(*new_types));
@@ -295,17 +387,70 @@ static int graft_btf(void)
 	memcpy(new_strings, vm_btf->strings, vs);
 	memcpy(new_strings + vs, mod_btf->strings, ms);
 
+	/* Find what the task_struct member needs; without it the image is the
+	 * plain merge and schedulers that touch p->scx fail to load.
+	 */
+	for (i = 1; i < vm_btf->nr_types; i++) {
+		const struct btf_type *t = vm_btf->types[i];
+
+		if (BTF_INFO_KIND(t->info) == BTF_KIND_STRUCT &&
+		    !strcmp(vm_btf->strings + t->name_off, "task_struct")) {
+			task_struct_type = t;
+			break;
+		}
+	}
+	for (i = 0; i < mod_btf->nr_types; i++) {
+		const struct btf_type *t = mod_btf->types[i];
+
+		if (BTF_INFO_KIND(t->info) == BTF_KIND_STRUCT &&
+		    !strcmp(new_strings + t->name_off, "sched_ext_entity"))
+			entity_id = mod_btf->start_id + i;
+	}
+	for (i = vs; i + 4 <= vs + ms; i++)
+		if (!new_strings[i - 1] && !strcmp(new_strings + i, "scx"))
+			scx_name_off = i;
+	if (task_struct_type && entity_id && scx_name_off) {
+		extra = sizeof(struct btf_member);
+		split = (void *)(btf_type_member(task_struct_type) +
+				 btf_type_vlen(task_struct_type)) -
+			(vm_btf->nohdr_data + vm_btf->hdr.type_off);
+	} else {
+		pr_warn("p->scx will not resolve: task_struct %d entity %u name %u\n",
+			!!task_struct_type, entity_id, scx_name_off);
+	}
+
+	/* The merged image, with one change to vmlinux's part: task_struct gains
+	 * a member "scx" over the words of p->dl that hold our per-task state,
+	 * so that p->scx.slice in a scheduler relocates to where it really is.
+	 * A member more makes the type 12 bytes longer and moves no id.
+	 */
 	hdr = (void *)blob;
 	*hdr = vm_btf->hdr;
 	hdr->type_off = 0;
-	hdr->type_len = vt + mt;
-	hdr->str_off = vt + mt;
+	hdr->type_len = vt + mt + extra;
+	hdr->str_off = vt + mt + extra;
 	hdr->str_len = vs + ms;
-	memcpy(blob + sizeof(*hdr), vm_btf->nohdr_data + vm_btf->hdr.type_off, vt);
-	memcpy(blob + sizeof(*hdr) + vt, mod_btf->nohdr_data + mod_btf->hdr.type_off, mt);
-	memcpy(blob + sizeof(*hdr) + vt + mt, new_strings, vs + ms);
+	out = blob + sizeof(*hdr);
+	base_types = vm_btf->nohdr_data + vm_btf->hdr.type_off;
+	if (extra) {
+		struct btf_type *ts;
+		struct btf_member *m;
+
+		memcpy(out, base_types, split);
+		ts = (void *)(out + ((void *)task_struct_type - base_types));
+		ts->info = (ts->info & ~0xffffU) | (btf_type_vlen(task_struct_type) + 1);
+		m = (void *)(out + split);
+		m->name_off = scx_name_off;
+		m->type = entity_id;
+		m->offset = offsetof(struct task_struct, dl.dl_runtime) * 8;
+		memcpy(out + split + extra, base_types + split, vt - split);
+	} else {
+		memcpy(out, base_types, vt);
+	}
+	memcpy(out + vt + extra, mod_btf->nohdr_data + mod_btf->hdr.type_off, mt);
+	memcpy(out + vt + extra + mt, new_strings, vs + ms);
 	merged_attr.private = blob;
-	merged_attr.size = sizeof(*hdr) + vt + mt + vs + ms;
+	merged_attr.size = sizeof(*hdr) + vt + extra + mt + vs + ms;
 
 	/* Readers take no lock on the vmlinux BTF, so swap with all CPUs held. */
 	return stop_machine(graft_stopped, NULL, NULL);
@@ -375,11 +520,13 @@ int scx_bpf_init(void)
 	int ret;
 
 	BTF_TYPE_EMIT(struct bpf_struct_ops_sched_ext_ops);
+	BTF_TYPE_EMIT(struct scx_btf_anchor);
 	btf_ctx_access_fn = (void *)kallsyms_name_to_addr("btf_ctx_access");
+	btf_struct_access_fn = (void *)kallsyms_name_to_addr("btf_struct_access");
 	base_func_proto_fn = (void *)kallsyms_name_to_addr("bpf_base_func_proto");
 	resolve_func_ptr_fn = (void *)kallsyms_name_to_addr("btf_type_resolve_func_ptr");
 	distill_func_proto_fn = (void *)kallsyms_name_to_addr("btf_distill_func_proto");
-	if (!btf_ctx_access_fn || !base_func_proto_fn || !resolve_func_ptr_fn ||
+	if (!btf_ctx_access_fn || !btf_struct_access_fn || !base_func_proto_fn || !resolve_func_ptr_fn ||
 	    !distill_func_proto_fn)
 		return -ENOENT;
 	ret = graft_btf();

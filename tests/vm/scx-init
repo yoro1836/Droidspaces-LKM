@@ -8,6 +8,9 @@ P=/sys/module/droidspaces_scx/parameters
 result=0
 /load-module /scx.ko || { echo DS_SCX_LOAD_FAIL; poweroff -f; }
 ticks() { cut -d' ' -f14 /proc/$1/stat; }
+# A task that mostly sleeps gathers no ticks, but every turn it gets ends in a
+# context switch.
+runs() { n=0; for v in $(grep ctxt_switches /proc/$1/status | cut -f2); do n=$((n + v)); done; echo $n; }
 
 # Three spinners on two CPUs, all in the class: each must keep getting time.
 pids=
@@ -31,7 +34,7 @@ timeout 120 /scx-test >/dev/null
 kill $hog $pids
 sleep 1
 
-# A BPF scheduler, a global FIFO: three spinners and three sleepers on two
+# A BPF scheduler, scx_simple's weighted vtime queue: three spinners and three sleepers on two
 # CPUs must all keep getting time through its queue, and when it is unloaded
 # while they wait in that queue they must carry on without it.
 /scx-load /scx-sched.bpf.o 12 > /bpf.log 2>&1 & loader=$!
@@ -41,19 +44,20 @@ for i in 1 2 3; do sh -c 'while :; do :; done' & bpids="$bpids $!"; done
 for i in 1 2 3; do sh -c 'while :; do usleep 1000; done' & bpids="$bpids $!"; done
 for p in $bpids; do echo $p > $P/attach || result=1; done
 sleep 2
-for p in $bpids; do eval "t$p=$(ticks $p)"; done
+for p in $bpids; do eval "t$p=$(runs $p)"; done
 sleep 4
 starved=0
-for p in $bpids; do eval "old=\$t$p"; [ $(($(ticks $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+for p in $bpids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
 wait $loader
 cat /bpf.log
 [ "$starved" = 0 ] && echo "SCX-BPF every task ran: PASS" || { echo "SCX-BPF every task ran: FAIL ($starved starved)"; result=1; }
 grep -q "SCX-BPF detach: PASS" /bpf.log && grep -Eq "consumed=[1-9][0-9]+ running=[1-9]" /bpf.log && echo "SCX-BPF queue in use: PASS" || { echo "SCX-BPF queue in use: FAIL"; result=1; }
-for p in $bpids; do eval "t$p=$(ticks $p)"; done
+for p in $bpids; do eval "t$p=$(runs $p)"; done
 sleep 3
 starved=0
-for p in $bpids; do eval "old=\$t$p"; [ $(($(ticks $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
+for p in $bpids; do eval "old=\$t$p"; [ $(($(runs $p) - old)) -gt 0 ] || starved=$((starved + 1)); done
 [ "$starved" = 0 ] && echo "SCX-BPF tasks survive unload: PASS" || { echo "SCX-BPF tasks survive unload: FAIL ($starved starved)"; result=1; }
+grep -q "SCX-BPF exit_kind=64" /bpf.log && echo "SCX-BPF exit reported: PASS" || { echo "SCX-BPF exit reported: FAIL"; result=1; }
 echo "kfunc_errors=$(cat $P/nr_kfunc_errors)"
 [ "$(cat $P/nr_kfunc_errors)" = 0 ] || result=1
 kill $bpids

@@ -32,7 +32,7 @@ struct scx_dsq {
  * task reads: fork clears them, and becoming a deadline task rewrites them
  * all, by which time the task has left this class.
  */
-struct scx_entity {
+struct sched_ext_entity {
 	u64 slice;
 	u64 dsq_vtime;
 	struct scx_dsq *dsq;	/* the non-local queue it waits in, if any */
@@ -43,24 +43,102 @@ struct scx_entity {
 };
 #define SCX_ENT_DDSP	1	/* ddsp_* say where the next enqueue goes */
 
-static inline struct scx_entity *scx_ent(struct task_struct *p)
+static inline struct sched_ext_entity *scx_ent(struct task_struct *p)
 {
-	BUILD_BUG_ON(sizeof(struct scx_entity) > offsetof(struct sched_dl_entity, flags) -
+	BUILD_BUG_ON(sizeof(struct sched_ext_entity) > offsetof(struct sched_dl_entity, flags) -
 						 offsetof(struct sched_dl_entity, dl_runtime));
-	return (struct scx_entity *)&p->dl.dl_runtime;
+	return (struct sched_ext_entity *)&p->dl.dl_runtime;
 }
 
-/* The operations a BPF scheduler implements. Member names and prototypes
- * follow upstream's struct sched_ext_ops, so the same scheduler source binds
- * to it; members are added as the class learns to call them.
+enum scx_exit_kind {
+	SCX_EXIT_NONE,
+	SCX_EXIT_DONE,
+	SCX_EXIT_UNREG = 64,
+	SCX_EXIT_UNREG_BPF,
+	SCX_EXIT_UNREG_KERN,
+	SCX_EXIT_SYSRQ,
+	SCX_EXIT_ERROR = 1024,
+	SCX_EXIT_ERROR_BPF,
+	SCX_EXIT_ERROR_STALL,
+};
+
+struct scx_exit_info {
+	enum scx_exit_kind kind;
+	s64 exit_code;
+	const char *reason;
+	unsigned long *bt;
+	u32 bt_len;
+	char *msg;
+	char *dump;
+};
+
+struct scx_cpu_acquire_args {};
+struct scx_cpu_release_args {
+	int reason;
+	struct task_struct *task;
+};
+struct scx_init_task_args {
+	bool fork;
+	struct cgroup *cgroup;
+};
+struct scx_exit_task_args {
+	bool cancelled;
+};
+struct scx_cgroup_init_args {
+	u32 weight;
+};
+struct scx_dump_ctx {
+	enum scx_exit_kind kind;
+	s64 exit_code;
+	const char *reason;
+	u64 at_ns;
+	u64 at_jiffies;
+};
+
+/* The operations a BPF scheduler implements: upstream's struct sched_ext_ops
+ * member for member, because libbpf refuses a scheduler whose own copy of the
+ * struct has a member the kernel's lacks. The ones this class calls so far
+ * are select_cpu, enqueue, dispatch, running, stopping, enable, init and exit.
  */
 struct sched_ext_ops {
 	s32 (*select_cpu)(struct task_struct *p, s32 prev_cpu, u64 wake_flags);
 	void (*enqueue)(struct task_struct *p, u64 enq_flags);
+	void (*dequeue)(struct task_struct *p, u64 deq_flags);
 	void (*dispatch)(s32 cpu, struct task_struct *prev);
+	void (*tick)(struct task_struct *p);
+	void (*runnable)(struct task_struct *p, u64 enq_flags);
 	void (*running)(struct task_struct *p);
 	void (*stopping)(struct task_struct *p, bool runnable);
+	void (*quiescent)(struct task_struct *p, u64 deq_flags);
+	bool (*yield)(struct task_struct *from, struct task_struct *to);
+	bool (*core_sched_before)(struct task_struct *a, struct task_struct *b);
+	void (*set_weight)(struct task_struct *p, u32 weight);
+	void (*set_cpumask)(struct task_struct *p, const struct cpumask *cpumask);
+	void (*update_idle)(s32 cpu, bool idle);
+	void (*cpu_acquire)(s32 cpu, struct scx_cpu_acquire_args *args);
+	void (*cpu_release)(s32 cpu, struct scx_cpu_release_args *args);
+	s32 (*init_task)(struct task_struct *p, struct scx_init_task_args *args);
+	void (*exit_task)(struct task_struct *p, struct scx_exit_task_args *args);
+	void (*enable)(struct task_struct *p);
+	void (*disable)(struct task_struct *p);
+	void (*dump)(struct scx_dump_ctx *ctx);
+	void (*dump_cpu)(struct scx_dump_ctx *ctx, s32 cpu, bool idle);
+	void (*dump_task)(struct scx_dump_ctx *ctx, struct task_struct *p);
+	s32 (*cgroup_init)(struct cgroup *cgrp, struct scx_cgroup_init_args *args);
+	void (*cgroup_exit)(struct cgroup *cgrp);
+	s32 (*cgroup_prep_move)(struct task_struct *p, struct cgroup *from, struct cgroup *to);
+	void (*cgroup_move)(struct task_struct *p, struct cgroup *from, struct cgroup *to);
+	void (*cgroup_cancel_move)(struct task_struct *p, struct cgroup *from, struct cgroup *to);
+	void (*cgroup_set_weight)(struct cgroup *cgrp, u32 weight);
+	void (*cpu_online)(s32 cpu);
+	void (*cpu_offline)(s32 cpu);
 	s32 (*init)(void);
+	void (*exit)(struct scx_exit_info *info);
+	u32 dispatch_max_batch;
+	u64 flags;
+	u32 timeout_ms;
+	u32 exit_dump_len;
+	u64 hotplug_seq;
 	char name[128];
 };
 
@@ -74,4 +152,7 @@ bool scx_ops_enqueue(struct task_struct *p, u64 enq_flags);
 bool scx_ops_dispatch(s32 cpu);
 void scx_ops_running(struct task_struct *p);
 void scx_ops_stopping(struct task_struct *p, bool runnable);
+void scx_ops_enable(struct task_struct *p);
+/* A kfunc was told something the scheduler must not go on after. */
+void scx_ops_error(const char *msg);
 #endif

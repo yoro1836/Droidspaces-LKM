@@ -104,7 +104,7 @@ static struct scx_rq *scx_rq_of(struct rq *rq)
 static __nocfi void scx_update_curr(struct rq *rq)
 {
 	struct task_struct *curr = rq->curr;
-	struct scx_entity *ent = scx_ent(curr);
+	struct sched_ext_entity *ent = scx_ent(curr);
 	u64 now = rq_clock_task(rq);
 	s64 delta = now - curr->se.exec_start;
 	struct cgroup *cgrp;
@@ -166,11 +166,14 @@ static void scx_local_add(struct rq *rq, struct task_struct *p, bool head)
 	s->nr++;
 }
 
-/* Put a task that counts on @rq, whose lock is held, into a queue. */
+/* Put a task that counts on @rq, whose lock is held, into a queue. With
+ * @by_vtime the queue stays sorted by dsq_vtime, lowest first.
+ */
 static void scx_dispatch_to(struct rq *rq, struct task_struct *p, u64 dsq_id,
-			    u64 slice, u64 enq_flags)
+			    u64 slice, u64 enq_flags, bool by_vtime)
 {
-	struct scx_entity *ent = scx_ent(p);
+	struct list_head *pos;
+	struct sched_ext_entity *ent = scx_ent(p);
 	struct scx_dsq *dsq;
 
 	if (slice)
@@ -187,10 +190,22 @@ static void scx_dispatch_to(struct rq *rq, struct task_struct *p, u64 dsq_id,
 	rcu_read_lock();
 	dsq = find_dsq(dsq_id) ?: &scx_global;
 	raw_spin_lock(&dsq->lock);
-	if (enq_flags & SCX_ENQ_HEAD)
-		list_add(&p->rt.run_list, &dsq->list);
-	else
-		list_add_tail(&p->rt.run_list, &dsq->list);
+	pos = &dsq->list;
+	if (by_vtime && dsq != &scx_global) {
+		struct task_struct *q;
+
+		list_for_each_entry(q, &dsq->list, rt.run_list) {
+			if ((s64)(scx_ent(q)->dsq_vtime - ent->dsq_vtime) > 0) {
+				pos = &q->rt.run_list;
+				break;
+			}
+		}
+		list_add_tail(&p->rt.run_list, pos);
+	} else if (enq_flags & SCX_ENQ_HEAD) {
+		list_add(&p->rt.run_list, pos);
+	} else {
+		list_add_tail(&p->rt.run_list, pos);
+	}
 	dsq->nr++;
 	ent->dsq = dsq;
 	raw_spin_unlock(&dsq->lock);
@@ -202,14 +217,14 @@ static void scx_dispatch_to(struct rq *rq, struct task_struct *p, u64 dsq_id,
 static void do_enqueue(struct rq *rq, struct task_struct *p, u64 enq_flags)
 {
 	struct scx_ctx *ctx = this_cpu_ptr(&scx_ctxs);
-	struct scx_entity *ent = scx_ent(p);
+	struct sched_ext_entity *ent = scx_ent(p);
 
 	p->rt.watchdog_stamp = jiffies;
 	nr_enqueues++;
 	/* select_cpu already said where it goes, or we are moving it. */
 	if (ent->flags & SCX_ENT_DDSP) {
 		ent->flags &= ~SCX_ENT_DDSP;
-		scx_dispatch_to(rq, p, ent->ddsp_dsq_id, ent->ddsp_slice, enq_flags);
+		scx_dispatch_to(rq, p, ent->ddsp_dsq_id, ent->ddsp_slice, enq_flags, false);
 		return;
 	}
 	ctx->kind = SCX_CTX_ENQUEUE;
@@ -218,13 +233,13 @@ static void do_enqueue(struct rq *rq, struct task_struct *p, u64 enq_flags)
 	ctx->done = false;
 	if (!scx_ops_enqueue(p, enq_flags)) {
 		ctx->kind = SCX_CTX_NONE;
-		scx_dispatch_to(rq, p, SCX_DSQ_LOCAL, 0, enq_flags);
+		scx_dispatch_to(rq, p, SCX_DSQ_LOCAL, 0, enq_flags, false);
 		return;
 	}
 	ctx->kind = SCX_CTX_NONE;
 	/* A scheduler that keeps tasks in its own maps is not supported yet. */
 	if (!ctx->done)
-		scx_dispatch_to(rq, p, SCX_DSQ_GLOBAL, 0, enq_flags);
+		scx_dispatch_to(rq, p, SCX_DSQ_GLOBAL, 0, enq_flags, false);
 }
 
 static void rvh_enqueue(void *unused, struct rq *rq, struct task_struct *p, int flags)
@@ -239,7 +254,7 @@ static void rvh_enqueue(void *unused, struct rq *rq, struct task_struct *p, int 
 
 static void rvh_dequeue(void *unused, struct rq *rq, struct task_struct *p, int flags)
 {
-	struct scx_entity *ent;
+	struct sched_ext_entity *ent;
 	struct scx_dsq *dsq;
 
 	if (!is_scx(p))
@@ -280,7 +295,7 @@ static bool scx_consume(struct scx_dsq *dsq, int cpu)
 {
 	struct rq *this_rq = cpu_rq(cpu), *src;
 	struct task_struct *p, *found;
-	struct scx_entity *ent;
+	struct sched_ext_entity *ent;
 	int tries = 4;
 
 	while (tries--) {
@@ -370,7 +385,7 @@ static struct task_struct *scx_detach_one(int src_cpu, int dst_cpu)
 		}
 	}
 	if (found) {
-		struct scx_entity *ent = scx_ent(found);
+		struct sched_ext_entity *ent = scx_ent(found);
 
 		ent->flags |= SCX_ENT_DDSP;
 		ent->ddsp_dsq_id = SCX_DSQ_LOCAL;
@@ -488,7 +503,7 @@ static void idle_set_next(struct rq *rq)
 
 static void scx_start(struct rq *rq, struct task_struct *p)
 {
-	struct scx_entity *ent = scx_ent(p);
+	struct sched_ext_entity *ent = scx_ent(p);
 
 	if (!ent->slice)
 		ent->slice = SCX_SLICE_DFL;
@@ -612,7 +627,7 @@ __diag_ignore_all("-Wmissing-prototypes", "kfuncs are called from BPF only");
 noinline void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice, u64 enq_flags)
 {
 	struct scx_ctx *ctx = this_cpu_ptr(&scx_ctxs);
-	struct scx_entity *ent;
+	struct sched_ext_entity *ent;
 
 	if (p != ctx->p || ctx->done) {
 		nr_kfunc_errors++;
@@ -620,7 +635,7 @@ noinline void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice, u64
 	}
 	ent = scx_ent(p);
 	if (ctx->kind == SCX_CTX_ENQUEUE) {
-		scx_dispatch_to(ctx->rq, p, dsq_id, slice, enq_flags);
+		scx_dispatch_to(ctx->rq, p, dsq_id, slice, enq_flags, false);
 		ctx->done = true;
 	} else if (ctx->kind == SCX_CTX_SELECT) {
 		ent->flags |= SCX_ENT_DDSP;
@@ -629,6 +644,32 @@ noinline void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice, u64
 	} else {
 		nr_kfunc_errors++;
 	}
+}
+
+noinline void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
+				     u64 vtime, u64 enq_flags)
+{
+	struct scx_ctx *ctx = this_cpu_ptr(&scx_ctxs);
+
+	if (p != ctx->p || ctx->done || ctx->kind != SCX_CTX_ENQUEUE) {
+		nr_kfunc_errors++;
+		return;
+	}
+	scx_ent(p)->dsq_vtime = vtime;
+	scx_dispatch_to(ctx->rq, p, dsq_id, slice, enq_flags, true);
+	ctx->done = true;
+}
+
+/* Upstream formats @fmt with @data. Here the scheduler stops on the bare
+ * format string, which is what names the failure.
+ */
+noinline void scx_bpf_error_bstr(char *fmt, unsigned long long *data, u32 data__sz)
+{
+	char msg[96];
+
+	if (strncpy_from_kernel_nofault(msg, fmt, sizeof(msg)) < 0)
+		strscpy(msg, "(unreadable)", sizeof(msg));
+	scx_ops_error(msg);
 }
 
 noinline bool scx_bpf_consume(u64 dsq_id)
@@ -713,6 +754,8 @@ __diag_pop();
 
 BTF_SET8_START(scx_kfunc_ids)
 BTF_ID_FLAGS(func, scx_bpf_dispatch)
+BTF_ID_FLAGS(func, scx_bpf_dispatch_vtime)
+BTF_ID_FLAGS(func, scx_bpf_error_bstr)
 BTF_ID_FLAGS(func, scx_bpf_consume)
 BTF_ID_FLAGS(func, scx_bpf_create_dsq)
 BTF_ID_FLAGS(func, scx_bpf_dsq_nr_queued)
@@ -824,13 +867,14 @@ static int scx_set_class(struct task_struct *p, bool attach)
 		if (from->switched_from)
 			from->switched_from(rq, p);
 		INIT_LIST_HEAD(&p->rt.run_list);
-		memset(scx_ent(p), 0, sizeof(struct scx_entity));
+		memset(scx_ent(p), 0, sizeof(struct sched_ext_entity));
 		scx_ent(p)->weight = 100;
 		p->rt.timeout = SCX_MAGIC;
+		scx_ops_enable(p);
 		nr_attaches++;
 	} else {
 		p->rt.timeout = 0;
-		memset(scx_ent(p), 0, sizeof(struct scx_entity));
+		memset(scx_ent(p), 0, sizeof(struct sched_ext_entity));
 	}
 	p->sched_class = to;
 	if (queued)

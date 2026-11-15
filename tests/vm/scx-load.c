@@ -42,7 +42,7 @@ static int print(enum libbpf_print_level level, const char *fmt, va_list args)
 int main(int argc, char **argv)
 {
 	struct bpf_object *obj;
-	struct bpf_map *map;
+	struct bpf_map *map, *exit_map = NULL;
 	const char *merged = "/data/local/tmp/scx-merged.btf";
 	struct bpf_link *link;
 	int seconds;
@@ -80,7 +80,7 @@ int main(int argc, char **argv)
 		fflush(stdout);
 		sleep(seconds);
 		bpf_object__for_each_map(map, obj) {
-			unsigned long v[6] = { 0 };
+			unsigned long v[7] = { 0 };
 			int key = 0;
 
 			if (!strstr(bpf_map__name(map), ".bss"))
@@ -89,8 +89,17 @@ int main(int argc, char **argv)
 				printf("SCX-BPF local=%lu queued=%lu dispatch=%lu consumed=%lu "
 				       "running=%lu stopping=%lu\n",
 				       v[0], v[1], v[2], v[3], v[4], v[5]);
+			exit_map = map;
 		}
 		bpf_link__destroy(link);
+		if (exit_map) {
+			unsigned long v[7] = { 0 };
+			int key = 0;
+
+			/* exit() ran during the detach: 64 is SCX_EXIT_UNREG */
+			if (!bpf_map_lookup_elem(bpf_map__fd(exit_map), &key, v))
+				printf("SCX-BPF exit_kind=%lu\n", v[6]);
+		}
 		printf("SCX-BPF detach: PASS\n");
 		return 0;
 	}
