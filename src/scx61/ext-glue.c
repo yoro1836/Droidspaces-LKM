@@ -15,6 +15,8 @@
 #include <linux/cpufreq.h>
 #include <linux/pm_qos.h>
 #include <linux/cpuhotplug.h>
+#include <linux/set_memory.h>
+#include <linux/pgtable.h>
 #include "port.h"
 
 DEFINE_PER_CPU(struct ds_scx_rq, ds_scx_rqs);
@@ -668,9 +670,59 @@ int scx61_st_init_member(const struct btf_type *t, const struct btf_member *memb
 	return scx61_st->init_member(t, member, kdata, udata);
 }
 
+static bool scx61_kernel_exec(unsigned long a)
+{
+	pgd_t *pgd = pgd_offset_k(a);
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t pte;
+
+	if (pgd_none(READ_ONCE(*pgd)))
+		return false;
+	p4d = p4d_offset(pgd, a);
+	if (p4d_none(READ_ONCE(*p4d)))
+		return false;
+	pud = pud_offset(p4d, a);
+	if (pud_none(READ_ONCE(*pud)) || pud_sect(READ_ONCE(*pud)))
+		return false;
+	pmd = pmd_offset(pud, a);
+	if (pmd_none(READ_ONCE(*pmd)) || pmd_sect(READ_ONCE(*pmd)))
+		return false;
+	pte = READ_ONCE(*pte_offset_kernel(pmd, a));
+	return pte_valid(pte) && !(pte_val(pte) & PTE_PXN);
+}
+
+/* A Galaxy S24 went down calling ops.init() of the second scheduler it ran:
+ * the struct_ops trampoline page, which the BPF core makes executable just
+ * before reg(), was not. Why is not known yet, so every callback is checked
+ * here, made executable once more if it is not, and the scheduler is refused
+ * if that does not help, rather than jumped into.
+ */
+static int scx61_check_callbacks(const struct sched_ext_ops *ops)
+{
+	void *const *fn = (void *const *)ops;
+	unsigned int i, n = offsetof(struct sched_ext_ops, dispatch_max_batch) / sizeof(*fn);
+	unsigned long a;
+	int ret;
+
+	for (i = 0; i < n; i++) {
+		a = (unsigned long)fn[i];
+		if (!a || scx61_kernel_exec(a))
+			continue;
+		ret = set_memory_x(a & PAGE_MASK, 1);
+		pr_err("sched_ext: callback %u at %px is not executable, set_memory_x: %d, now %s\n",
+		       i, fn[i], ret, scx61_kernel_exec(a) ? "executable" : "still not");
+		if (!scx61_kernel_exec(a))
+			return -EFAULT;
+	}
+	return 0;
+}
+
 int scx61_st_reg(void *kdata)
 {
-	int ret = scx61_st->validate(kdata) ?: scx61_st->reg(kdata, NULL);
+	int ret = scx61_st->validate(kdata) ?: scx61_check_callbacks(kdata) ?:
+		  scx61_st->reg(kdata, NULL);
 
 	/* enabling set every CPU's target without announcing it */
 	scx61_cpuperf_kick();
