@@ -1,5 +1,5 @@
 diff --git a/src/libbpf.c b/src/libbpf.c
-index 02e75b1..bdba47d 100644
+index 02e75b1..431811e 100644
 --- a/src/libbpf.c
 +++ b/src/libbpf.c
 @@ -1533,7 +1533,10 @@ static int init_struct_ops_maps(struct bpf_object *obj, const char *sec_name,
@@ -14,7 +14,23 @@ index 02e75b1..bdba47d 100644
  		map->autoattach = true;
  
  		map->st_ops = calloc(1, sizeof(*map->st_ops));
-@@ -6809,7 +6812,15 @@ bpf_object__relocate_data(struct bpf_object *obj, struct bpf_program *prog)
+@@ -5970,6 +5973,15 @@ static int load_module_btfs(struct bpf_object *obj)
+ 	if (obj->btf_modules_loaded)
+ 		return 0;
+ 
++	/* android14-6.1 with droidspaces_scx: the vmlinux BTF this process
++	 * sees is the module's merged image, which is longer than the one the
++	 * device's other modules were built on, so their split BTF does not
++	 * parse on top of it. Everything a scheduler needs is in the merged
++	 * image; leave the modules out.
++	 */
++	obj->btf_modules_loaded = true;
++	return 0;
++
+ 	if (obj->gen_loader)
+ 		return 0;
+ 
+@@ -6809,7 +6821,15 @@ bpf_object__relocate_data(struct bpf_object *obj, struct bpf_program *prog)
  				}
  				insn[1].imm = ext->kcfg.data_off;
  			} else /* EXT_KSYM */ {
@@ -31,7 +47,7 @@ index 02e75b1..bdba47d 100644
  					insn[0].src_reg = BPF_PSEUDO_BTF_ID;
  					insn[0].imm = ext->ksym.kernel_btf_id;
  					insn[1].imm = ext->ksym.kernel_btf_obj_fd;
-@@ -8571,6 +8582,11 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+@@ -8571,6 +8591,11 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
  	}
  	load_attr.log_level = log_level;
  	load_attr.prog_flags = prog->prog_flags;
@@ -43,7 +59,7 @@ index 02e75b1..bdba47d 100644
  	load_attr.fd_array = obj->fd_array;
  	err = bpf_object__bind_arena(obj, prog, &load_attr);
  	if (err)
-@@ -8583,6 +8599,17 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
+@@ -8583,6 +8608,17 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
  	/* adjust load_attr if sec_def provides custom preload callback */
  	if (prog->sec_def && prog->sec_def->prog_prepare_load_fn) {
  		err = prog->sec_def->prog_prepare_load_fn(prog, &load_attr, prog->sec_def->cookie);
