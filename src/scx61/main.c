@@ -608,6 +608,7 @@ static int scx_select_task_rq(struct task_struct *p, int prev_cpu, int flags)
 
 	ctx->kind = SCX_CTX_SELECT;
 	ctx->p = p;
+	ctx->done = false;
 	cpu = scx_ops_select_cpu(p, prev_cpu, flags);
 	ctx->kind = SCX_CTX_NONE;
 	if (cpu >= 0)

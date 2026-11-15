@@ -335,6 +335,59 @@ static ssize_t merged_read(struct file *file, struct kobject *kobj,
 	return memory_read_from_buffer(buf, len, &off, attr->private, attr->size);
 }
 
+/* A module built from vendor headers that differ anywhere from the running
+ * kernel carries its own copies of kernel structs: this module's BTF had two
+ * of task_struct on a Samsung device. The verifier compares type ids, so a
+ * kfunc that takes such a copy rejects the kernel's own task_struct.
+ *
+ * Point every pointer in the module's types at vmlinux's struct of the same
+ * name instead. Only pointers and their qualifiers are retargeted, never a
+ * struct embedded by value, so no layout the module was compiled with
+ * changes. Returns, per module type, the vmlinux id it duplicates or 0.
+ */
+static u32 *adopt_vmlinux_structs(void)
+{
+	u32 *dup = kvcalloc(mod_btf->nr_types, sizeof(*dup), GFP_KERNEL);
+	u32 i, j, n = 0;
+
+	if (!dup)
+		return NULL;
+	for (i = 0; i < mod_btf->nr_types; i++) {
+		const struct btf_type *m = mod_btf->types[i];
+		u32 kind = BTF_INFO_KIND(m->info);
+		const char *name;
+
+		if ((kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION) || !m->name_off)
+			continue;
+		name = mod_btf->strings + (m->name_off - mod_btf->start_str_off);
+		if (m->name_off < mod_btf->start_str_off)
+			name = vm_btf->strings + m->name_off;
+		for (j = 1; j < vm_btf->nr_types; j++) {
+			const struct btf_type *v = vm_btf->types[j];
+
+			if (BTF_INFO_KIND(v->info) == kind && v->name_off &&
+			    !strcmp(vm_btf->strings + v->name_off, name)) {
+				dup[i] = j;
+				n++;
+				break;
+			}
+		}
+		cond_resched();
+	}
+	for (i = 0; i < mod_btf->nr_types; i++) {
+		struct btf_type *m = mod_btf->types[i];
+		u32 kind = BTF_INFO_KIND(m->info);
+
+		if ((kind == BTF_KIND_PTR || kind == BTF_KIND_CONST ||
+		     kind == BTF_KIND_VOLATILE || kind == BTF_KIND_RESTRICT) &&
+		    m->type >= mod_btf->start_id && dup[m->type - mod_btf->start_id])
+			m->type = dup[m->type - mod_btf->start_id];
+	}
+	if (n)
+		pr_info("%u kernel structs duplicated in module BTF, pointers retargeted\n", n);
+	return dup;
+}
+
 static struct bin_attribute merged_attr = {
 	.attr = { .name = "btf", .mode = 0444 },
 	.read = merged_read,
@@ -350,6 +403,7 @@ static int graft_btf(void)
 	struct btf_header *hdr;
 	void *base_types;
 	char *blob, *out;
+	u32 *dup;
 
 	if (!modules || !lock || !vmp || !*vmp)
 		return -ENOENT;
@@ -371,6 +425,9 @@ static int graft_btf(void)
 		pr_err("unexpected BTF layout, or a module with BTF loaded before the graft\n");
 		return -EOPNOTSUPP;
 	}
+	dup = adopt_vmlinux_structs();
+	if (!dup)
+		return -ENOMEM;
 	vt = vm_btf->hdr.type_len;
 	vs = vm_btf->hdr.str_len;
 	mt = mod_btf->hdr.type_len;
@@ -448,6 +505,19 @@ static int graft_btf(void)
 		memcpy(out, base_types, vt);
 	}
 	memcpy(out + vt + extra, mod_btf->nohdr_data + mod_btf->hdr.type_off, mt);
+	/* In the image a loader searches by name, the module's copies would be
+	 * second candidates for every CO-RE relocation. Leave them nameless.
+	 */
+	for (i = 0; i < mod_btf->nr_types; i++) {
+		struct btf_type *t;
+
+		if (!dup[i])
+			continue;
+		t = (void *)(out + vt + extra + ((void *)mod_btf->types[i] -
+			     (mod_btf->nohdr_data + mod_btf->hdr.type_off)));
+		t->name_off = 0;
+	}
+	kvfree(dup);
 	memcpy(out + vt + extra + mt, new_strings, vs + ms);
 	merged_attr.private = blob;
 	merged_attr.size = sizeof(*hdr) + vt + extra + mt + vs + ms;
