@@ -123,6 +123,9 @@ static int __init scx_port_init(void)
 		pr_err("sched_ext core: %d\n", ret);
 		return ret;
 	}
+	scx61_set_storage_busy((void *)kallsyms_name_to_addr("bpf_task_storage_busy"));
+	if (!kallsyms_name_to_addr("bpf_task_storage_busy"))
+		pr_warn("no bpf_task_storage_busy, task storage lookups can fail under load\n");
 	scx61_set_hrtimer_running((void *)kallsyms_name_to_addr("hrtimer_running"));
 	if (!kallsyms_name_to_addr("hrtimer_running"))
 		return -ENOENT;

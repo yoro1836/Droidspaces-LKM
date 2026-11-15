@@ -98,6 +98,10 @@ PATCHES = [
     ('uevent callbacks take a non-const kobject',
      r'static int scx_uevent\(const struct kobject \*kobj,', 'static int scx_uevent(struct kobject *kobj,', 1),
     ('sysrq handlers take an int', r'\(u8 key\)', '(int key)', 2),
+    ('6.1 fails a task storage lookup on a CPU already in one, see scx61_storage_enter()',
+     r'__ret = scx_ops\.op\(args\);', '__ret = SCX61_CALL_RET(scx_ops.op(args));', 2),
+    ('and so for callbacks without a value',
+     r'(\t\t)scx_ops\.op\(args\);', r'\1SCX61_CALL(scx_ops.op(args));', 2),
     ('kfuncs are found through the merged vmlinux BTF, so the sets have no owner',
      r'\t\.owner\t+= THIS_MODULE,\n(\t\.set\t+= &scx_kfunc_ids_)', r'\1', 6),
 ]

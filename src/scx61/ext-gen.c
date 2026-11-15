@@ -1098,10 +1098,10 @@ static void scx_kf_disallow(u32 mask)
 do {										\
 	if (mask) {								\
 		scx_kf_allow(mask);						\
-		scx_ops.op(args);						\
+		SCX61_CALL(scx_ops.op(args));						\
 		scx_kf_disallow(mask);						\
 	} else {								\
-		scx_ops.op(args);						\
+		SCX61_CALL(scx_ops.op(args));						\
 	}									\
 } while (0)
 
@@ -1110,10 +1110,10 @@ do {										\
 	__typeof__(scx_ops.op(args)) __ret;					\
 	if (mask) {								\
 		scx_kf_allow(mask);						\
-		__ret = scx_ops.op(args);					\
+		__ret = SCX61_CALL_RET(scx_ops.op(args));					\
 		scx_kf_disallow(mask);						\
 	} else {								\
-		__ret = scx_ops.op(args);					\
+		__ret = SCX61_CALL_RET(scx_ops.op(args));					\
 	}									\
 	__ret;									\
 })

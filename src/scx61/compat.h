@@ -235,6 +235,17 @@ struct scx61_class {
  * ext-glue.c, each time upstream announces a change.
  */
 void scx61_cpuperf_kick(void);
+
+/* Around every BPF callback, see scx61_storage_enter() in ext-glue.c. */
+int scx61_storage_enter(void);
+void scx61_storage_exit(int busy);
+#define SCX61_CALL(call) ({ int __scx61_b = scx61_storage_enter(); call; scx61_storage_exit(__scx61_b); })
+#define SCX61_CALL_RET(call) ({							\
+	int __scx61_b = scx61_storage_enter();					\
+	__typeof__(call) __scx61_r = call;					\
+	scx61_storage_exit(__scx61_b);						\
+	__scx61_r;								\
+})
 #define cpufreq_update_util(rq, flags) ({ cpufreq_update_util(rq, flags); scx61_cpuperf_kick(); })
 
 #include "compat-bpf.h"

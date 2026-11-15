@@ -28,6 +28,7 @@ int scx61_cpumask_init(void);
 
 /* bpf-fixes.c */
 void scx61_set_hrtimer_running(void *addr);
+void scx61_set_storage_busy(void *busy);
 
 /* kptr.c */
 int scx61_kptr_init(void);
