@@ -119,6 +119,10 @@ ifneq ($(GKI_ANDROID),)
 ccflags-y += -DDS_GKI_ANDROID='"$(GKI_ANDROID)"' -DDS_GKI_VERSION='"$(GKI_VERSION)"'
 endif
 ccflags-y += -I$(srctree)
+# The port of upstream ext.c, while it does not build yet: SCX_PORT=1 adds it.
+ifeq ($(SCX_PORT),1)
+droidspaces_scx-y += $(SCX_DIR)/ext-port.o
+endif
 else
 obj-m := droidspaces_probe.o
 droidspaces_probe-y := src/probe.o $(addprefix vendor/kallrecon/,$(DEPS_LIB_OBJS))
