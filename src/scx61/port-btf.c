@@ -339,6 +339,43 @@ static __nocfi int take_struct_ops_slot(void)
 	return 0;
 }
 
+/* Byte offset of @member in struct @type of the loaded module @mod, from that
+ * module's own BTF, or a negative errno.
+ */
+int scx61_module_member_offset(const char *mod, const char *type, const char *member)
+{
+	struct list_head *modules = (void *)kallsyms_name_to_addr("btf_modules");
+	struct mutex *lock = (void *)kallsyms_name_to_addr("btf_module_mutex");
+	struct ds_btf_module *m;
+	struct ds_btf *btf = NULL;
+	int ret = -ENOENT;
+	u32 i, j;
+
+	if (!modules || !lock)
+		return -ENOENT;
+	mutex_lock(lock);
+	list_for_each_entry(m, modules, list)
+		if (!strcmp(m->module->name, mod))
+			btf = m->btf;
+	for (i = 0; btf && i < btf->nr_types; i++) {
+		const struct btf_type *t = btf->types[i];
+		const struct btf_member *bm = btf_type_member(t);
+
+		if (BTF_INFO_KIND(t->info) != BTF_KIND_STRUCT ||
+		    strcmp(btf_name_by_offset((struct btf *)btf, t->name_off) ?: "", type))
+			continue;
+		for (j = 0; j < btf_type_vlen(t); j++, bm++) {
+			if (!strcmp(btf_name_by_offset((struct btf *)btf, bm->name_off) ?: "", member)) {
+				ret = __btf_member_bit_offset(t, bm) / 8;
+				break;
+			}
+		}
+		break;
+	}
+	mutex_unlock(lock);
+	return ret;
+}
+
 int scx61_btf_init(void)
 {
 	int ret;

@@ -233,6 +233,33 @@ void scx61_update_curr(struct rq *rq)
 		update_curr_scx(rq);
 }
 
+/* Samsung's EMS, a scheduler module of its own on Exynos, tells a task's class
+ * by its priority, so it takes ours for fair tasks. Its enqueue hook puts the
+ * urgent ones, binder and foreground threads, on a per-rq "queue jump" list,
+ * and its hook in pick_next_task_fair() replaces fair's pick with the first
+ * task on that list: a task of ours was run as fair's choice, behind
+ * upstream's back, and the device went down on a corrupted list when it was
+ * put. EMS's hook runs before ours, so the task is taken off its list again
+ * right there. The list node is found through EMS's own BTF, see port-main.c.
+ */
+static int scx61_ems_qjump = -1;
+
+void scx61_set_ems_qjump(int offset)
+{
+	scx61_ems_qjump = offset;
+}
+
+static void scx61_ems_forget(struct task_struct *p)
+{
+	struct list_head *node;
+
+	if (scx61_ems_qjump < 0)
+		return;
+	node = (void *)p + scx61_ems_qjump;
+	if (node->next && !list_empty(node))
+		list_del_init(node);
+}
+
 /* The idle class has no enqueue_task, and the core calls it unconditionally.
  * These hooks sit right before and after that call: the first does upstream's
  * enqueue and lends the task to the stop class for the length of the call,
@@ -245,6 +272,7 @@ static void scx61_rvh_enqueue(void *unused, struct rq *rq, struct task_struct *p
 	scx61_flush_put(rq, NULL);
 	if (!task_is_scx(p))
 		return;
+	scx61_ems_forget(p);
 	enqueue_task_scx(rq, p, flags);
 	per_cpu(scx61_lent, cpu_of(rq)) = p;
 	p->sched_class = &stop_sched_class;

@@ -20,7 +20,10 @@ int scx61_st_init_member(const struct btf_type *t, const struct btf_member *memb
 int scx61_st_reg(void *kdata);
 void scx61_st_unreg(void *kdata);
 
+void scx61_set_ems_qjump(int offset);
+
 /* port-btf.c */
+int scx61_module_member_offset(const char *mod, const char *type, const char *member);
 int scx61_btf_init(void);
 int scx61_struct_ops_init(void);
 #endif

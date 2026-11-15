@@ -79,6 +79,20 @@ static int __init scx_port_init(void)
 	if (!idle || !fair || (void *)idle - (void *)fair > 512)
 		return -EOPNOTSUPP;
 
+	/* Samsung's EMS must be kept from running our tasks itself, see
+	 * scx61_ems_forget(). Without its BTF the node's place is not known
+	 * for sure, and guessing it would have us write into EMS's data.
+	 */
+	if (kallsyms_name_to_addr("tex_replace_next_task_fair")) {
+		ret = scx61_module_member_offset("ems", "ems_task_struct", "qjump_node");
+		if (ret < 0) {
+			pr_err("Samsung EMS without BTF: cannot coexist with it\n");
+			return -EOPNOTSUPP;
+		}
+		pr_info("Samsung EMS: queue jump node at vendor data +%d\n", ret);
+		scx61_set_ems_qjump(offsetof(struct task_struct, android_vendor_data1) + ret);
+	}
+
 	/* Types first: upstream registers kfuncs by BTF id. Nothing of the
 	 * class is entered before a scheduler is loaded, so the idle slot is
 	 * taken last.
