@@ -569,7 +569,14 @@ static int scx61_cpu_offline(unsigned int cpu)
  * unless the scheduler asks for less. Here each cpufreq policy gets a floor
  * instead: the highest target among its CPUs, as a share of its top
  * frequency. Whatever caps the frequency from above still does.
+ *
+ * A scheduler may set targets on every context switch (scx_bpfland does),
+ * and on Exynos every floor change is a message to the power management
+ * firmware. Unthrottled, that flood made the firmware stop answering and a
+ * Galaxy S24 reset itself. So floors are recomputed at most every
+ * SCX61_PERF_MS and only in steps of one sixteenth of the top frequency.
  */
+#define SCX61_PERF_MS 20
 static DEFINE_PER_CPU(struct freq_qos_request, scx61_qos);
 static DEFINE_PER_CPU(bool, scx61_qos_added);
 static struct irq_work scx61_perf_irq;
@@ -591,7 +598,8 @@ static void scx61_perf_workfn(struct work_struct *work)
 			if (scx_enabled())
 				for_each_cpu(i, policy->cpus)
 					target = max(target, scx_rq(cpu_rq(i))->cpuperf_target);
-			freq = target ? mult_frac(policy->cpuinfo.max_freq, target, SCX_CPUPERF_ONE)
+			target = DIV_ROUND_UP(target * 16, SCX_CPUPERF_ONE);
+			freq = target ? mult_frac(policy->cpuinfo.max_freq, target, 16)
 				      : FREQ_QOS_MIN_DEFAULT_VALUE;
 			if (per_cpu(scx61_qos_added, cpu))
 				freq_qos_update_request(req, freq);
@@ -602,11 +610,12 @@ static void scx61_perf_workfn(struct work_struct *work)
 	}
 	cpus_read_unlock();
 }
-static DECLARE_WORK(scx61_perf_work, scx61_perf_workfn);
+static DECLARE_DELAYED_WORK(scx61_perf_work, scx61_perf_workfn);
 
 static void scx61_perf_irqfn(struct irq_work *work)
 {
-	schedule_work(&scx61_perf_work);
+	/* a no-op while pending, which is the throttle */
+	schedule_delayed_work(&scx61_perf_work, msecs_to_jiffies(SCX61_PERF_MS));
 }
 
 void scx61_cpuperf_kick(void)
