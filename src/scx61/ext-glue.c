@@ -399,17 +399,24 @@ static void scx61_vh_free_task(void *unused, struct task_struct *p)
 
 /* The idle class has no yield_task. This hook runs before the core looks for
  * it and can tell the core to skip the rest, so sched_yield() is done here
- * the way do_sched_yield() does it.
+ * the way do_sched_yield() does it, for every task: deciding under the rq
+ * lock which class the task is in and then letting the core take the lock
+ * again left a window for scx61_recon_workfn() to move the task to us, and
+ * the core then called the idle class's missing yield_task. A Galaxy S24 went
+ * down that way after two hours.
  */
 static void scx61_rvh_before_yield(void *unused, long *skip)
 {
 	struct rq_flags rf;
 	struct rq *rq;
 
-	if (!task_is_scx(current))
-		return;
 	rq = this_rq_lock_irq(&rf);
-	yield_task_scx(rq);
+	schedstat_inc(rq->yld_count);
+	if (task_is_scx(current))
+		yield_task_scx(rq);
+	else
+		current->sched_class->yield_task(rq);
+	trace_android_rvh_do_sched_yield(rq);
 	/* do_sched_yield() holds preemption off across the unlock to avoid
 	 * scheduling twice. A module is not given that, and may schedule twice.
 	 */
