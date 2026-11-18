@@ -17,6 +17,11 @@
  *   the tick of a task of ours. The rate limit counts in sched_clock(),
  *   since the last two do not have an rq clock to hand.
  * - No iowait boost: our tasks do not pass SCHED_CPUFREQ_IOWAIT.
+ * - The target is scaled by the CPU's capacity. 6.12 takes it as util as
+ *   it is, although scx_bpf_cpuperf_set() calls it relative to the CPU's
+ *   top speed: on a single kind of core the two are the same. On the
+ *   Exynos 2400 a target of 30% on an A520 read as more than the core's
+ *   capacity, and the little cluster ran at twice the stock average.
  * - An idle CPU counts no cpuperf target. A scheduler sets the target when a
  *   task starts running and leaves it when the CPU goes idle, and 6.12 keeps
  *   counting that stale value for the whole policy. On a phone that holds a
@@ -60,8 +65,13 @@ static unsigned long scxg_util(unsigned int cpu, unsigned long *max)
 	unsigned long util;
 
 	*max = arch_scale_cpu_capacity(cpu);
+	/* The target is relative to this CPU's own top speed, as
+	 * scx_bpf_cpuperf_set() documents; util is in capacity, where only
+	 * the biggest core reaches SCHED_CAPACITY_SCALE.
+	 */
 	if (scx_enabled())
-		util = idle_cpu(cpu) ? 0 : scx_rq(cpu_rq(cpu))->cpuperf_target;
+		util = idle_cpu(cpu) ? 0 :
+		       scx_rq(cpu_rq(cpu))->cpuperf_target * *max >> SCHED_CAPACITY_SHIFT;
 	else
 		util = cpu_util_cfs(cpu);
 	return effective_cpu_util(cpu, util, FREQUENCY_UTIL, NULL);
