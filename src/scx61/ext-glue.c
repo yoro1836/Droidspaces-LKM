@@ -385,8 +385,18 @@ static void scx61_rvh_wake_up_new_task(void *unused, struct task_struct *p)
 		scx_cancel_fork(p);
 		return;
 	}
-	if (p->sched_class == &fair_sched_class && task_should_scx(p->policy))
-		p->sched_class = &ext_sched_class;
+	/* The core calls this hook before it takes p's locks, and a
+	 * sched_setscheduler() on the new task can already run: the class
+	 * is decided under both locks, as every other class change is.
+	 */
+	{
+		struct rq_flags rf;
+		struct rq *rq = task_rq_lock(p, &rf);
+
+		if (p->sched_class == &fair_sched_class && task_should_scx(p->policy))
+			p->sched_class = &ext_sched_class;
+		task_rq_unlock(rq, p, &rf);
+	}
 	scx_post_fork(p);
 }
 
