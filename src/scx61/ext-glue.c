@@ -18,6 +18,11 @@
 #include <linux/pgtable.h>
 #include "port.h"
 
+/* the scx cpufreq governor, governor.c */
+static bool scx61_gov_update(void);
+static bool scx61_policy_is_ours(struct cpufreq_policy *policy);
+static int scx61_gov_init(void);
+
 DEFINE_PER_CPU(struct ds_scx_rq, ds_scx_rqs);
 
 s64 update_curr_common(struct rq *rq)
@@ -245,6 +250,8 @@ void scx61_task_tick(struct rq *rq, struct task_struct *curr, int queued)
 {
 	if (curr != rq->idle)
 		task_tick_scx(rq, curr, queued);
+	/* nothing else reaches the governor while only our tasks run */
+	scx61_gov_update();
 }
 
 /* select_task_rq_idle() */
@@ -618,7 +625,8 @@ static void scx61_perf_workfn(struct work_struct *work)
 		if (!policy)
 			continue;
 		if (policy->cpu == cpu) {
-			if (scx_enabled())
+			/* the scx governor reads the targets itself */
+			if (scx_enabled() && !scx61_policy_is_ours(policy))
 				for_each_cpu(i, policy->cpus)
 					target = max(target, scx_rq(cpu_rq(i))->cpuperf_target);
 			target = DIV_ROUND_UP(target * 16, SCX_CPUPERF_ONE);
@@ -641,8 +649,10 @@ static void scx61_perf_irqfn(struct irq_work *work)
 	schedule_delayed_work(&scx61_perf_work, msecs_to_jiffies(SCX61_PERF_MS));
 }
 
+
 void scx61_cpuperf_kick(void)
 {
+	scx61_gov_update();
 	irq_work_queue(&scx61_perf_irq);
 }
 
@@ -872,5 +882,9 @@ int __init scx61_glue_init(void)
 	}
 	rcu_read_unlock();
 	percpu_up_write(&scx_fork_rwsem);
+	/* Without the governor the floors still carry the targets. */
+	ret = scx61_gov_init();
+	if (ret)
+		pr_warn("sched_ext: scx cpufreq governor: %d\n", ret);
 	return 0;
 }

@@ -26,4 +26,5 @@
 #include "ext-gen.c"
 
 #include "ext-glue.c"
+#include "governor.c"
 #pragma clang attribute pop
