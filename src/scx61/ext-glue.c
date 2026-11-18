@@ -17,6 +17,7 @@
 #include <linux/cpuhotplug.h>
 #include <linux/pgtable.h>
 #include "port.h"
+#include "hooks.h"
 
 /* the scx cpufreq governor, governor.c */
 static bool scx61_gov_update(void);
@@ -818,6 +819,50 @@ void scx61_st_unreg(void *kdata)
 	scx61_cpuperf_kick();
 }
 
+/* The scheduler core's vendor hooks, see hooks.h. */
+SCX61_VENDOR_REG(android_rvh_wake_up_new_task, scx61_rvh_wake_up_new_task)
+SCX61_VENDOR_REG(android_vh_free_task, scx61_vh_free_task)
+SCX61_VENDOR_REG(android_rvh_enqueue_task, scx61_rvh_enqueue)
+SCX61_VENDOR_REG(android_rvh_after_enqueue_task, scx61_rvh_after_enqueue)
+SCX61_VENDOR_REG(android_rvh_dequeue_task, scx61_rvh_dequeue)
+SCX61_VENDOR_REG(android_rvh_after_dequeue_task, scx61_rvh_after_dequeue)
+SCX61_VENDOR_REG(android_rvh_schedule, scx61_rvh_schedule)
+SCX61_VENDOR_REG(android_rvh_tick_entry, scx61_rvh_tick_entry)
+SCX61_VENDOR_REG(android_rvh_before_do_sched_yield, scx61_rvh_before_yield)
+SCX61_VENDOR_REG(android_rvh_set_user_nice_locked, scx61_rvh_set_user_nice_locked)
+SCX61_VENDOR_REG(android_rvh_set_cpus_allowed_comm, scx61_rvh_set_cpus_allowed)
+SCX61_VENDOR_REG(android_rvh_setscheduler, scx61_rvh_setscheduler)
+SCX61_VENDOR_REG(android_rvh_rtmutex_prepare_setprio, scx61_rvh_rtmutex_setprio)
+
+static struct scx61_hook scx61_core_hooks[] = {
+	SCX61_VENDOR_HOOK(android_rvh_wake_up_new_task, SCX61_UNLOCKED, false,
+			  "upstream's fork points; the class is set under task_rq_lock()"),
+	SCX61_VENDOR_HOOK(android_vh_free_task, SCX61_UNLOCKED, false,
+			  "upstream's sched_ext_free()"),
+	SCX61_VENDOR_HOOK(android_rvh_enqueue_task, SCX61_RQ_LOCKED, true,
+			  "the idle class has no enqueue_task"),
+	SCX61_VENDOR_HOOK(android_rvh_after_enqueue_task, SCX61_RQ_LOCKED, true,
+			  "takes back the task lent to the stop class"),
+	SCX61_VENDOR_HOOK(android_rvh_dequeue_task, SCX61_RQ_LOCKED, true,
+			  "the idle class's dequeue_task only complains"),
+	SCX61_VENDOR_HOOK(android_rvh_after_dequeue_task, SCX61_RQ_LOCKED, true,
+			  "takes back the task lent to the stop class"),
+	SCX61_VENDOR_HOOK(android_rvh_schedule, SCX61_RQ_LOCKED, true,
+			  "flushes a deferred put_prev when a higher class picked"),
+	SCX61_VENDOR_HOOK(android_rvh_tick_entry, SCX61_RQ_LOCKED, true,
+			  "upstream's scx_tick()"),
+	SCX61_VENDOR_HOOK(android_rvh_before_do_sched_yield, SCX61_UNLOCKED, true,
+			  "the idle class has no yield_task; all of sched_yield() is done here"),
+	SCX61_VENDOR_HOOK(android_rvh_set_user_nice_locked, SCX61_RQ_LOCKED, false,
+			  "the idle class's prio_changed is a BUG()"),
+	SCX61_VENDOR_HOOK(android_rvh_set_cpus_allowed_comm, SCX61_RQ_LOCKED, false,
+			  "upstream's set_cpus_allowed_scx()"),
+	SCX61_VENDOR_HOOK(android_rvh_setscheduler, SCX61_RQ_LOCKED, false,
+			  "the core gives a task of ours to fair; put right after"),
+	SCX61_VENDOR_HOOK(android_rvh_rtmutex_prepare_setprio, SCX61_PI_LOCKED, false,
+			  "priority inheritance moves tasks between classes"),
+};
+
 int __init scx61_glue_init(void)
 {
 	struct task_struct *g, *p;
@@ -851,19 +896,7 @@ int __init scx61_glue_init(void)
 	 * is listed by the fork hook; the ones that exist are listed below,
 	 * with forks held off so that none is seen twice or not at all.
 	 */
-	ret = register_trace_android_rvh_wake_up_new_task(scx61_rvh_wake_up_new_task, NULL) ?:
-	      register_trace_android_vh_free_task(scx61_vh_free_task, NULL) ?:
-	      register_trace_android_rvh_enqueue_task(scx61_rvh_enqueue, NULL) ?:
-	      register_trace_android_rvh_after_enqueue_task(scx61_rvh_after_enqueue, NULL) ?:
-	      register_trace_android_rvh_dequeue_task(scx61_rvh_dequeue, NULL) ?:
-	      register_trace_android_rvh_after_dequeue_task(scx61_rvh_after_dequeue, NULL) ?:
-	      register_trace_android_rvh_schedule(scx61_rvh_schedule, NULL) ?:
-	      register_trace_android_rvh_tick_entry(scx61_rvh_tick_entry, NULL) ?:
-	      register_trace_android_rvh_before_do_sched_yield(scx61_rvh_before_yield, NULL) ?:
-	      register_trace_android_rvh_set_user_nice_locked(scx61_rvh_set_user_nice_locked, NULL) ?:
-	      register_trace_android_rvh_set_cpus_allowed_comm(scx61_rvh_set_cpus_allowed, NULL) ?:
-	      register_trace_android_rvh_setscheduler(scx61_rvh_setscheduler, NULL) ?:
-	      register_trace_android_rvh_rtmutex_prepare_setprio(scx61_rvh_rtmutex_setprio, NULL);
+	ret = scx61_hooks_register(scx61_core_hooks, ARRAY_SIZE(scx61_core_hooks));
 	if (ret)
 		return ret;
 	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "sched_ext:online",

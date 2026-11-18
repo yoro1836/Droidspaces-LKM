@@ -30,6 +30,7 @@
 #include <linux/kprobes.h>
 #include "core.h"
 #include "port.h"
+#include "hooks.h"
 
 static s32 (*find_btf_id_fn)(const char *name, u32 kind, struct btf **btf_p);
 static s32 (*find_dtor_kfunc_fn)(struct btf *btf, u32 btf_id);
@@ -487,10 +488,26 @@ static struct kretprobe map_func_krp = {
 	.maxactive = 16,
 };
 
+/* The BPF side, see hooks.h. All of it runs when a scheduler is loaded or
+ * frees its maps, none on a scheduling path.
+ */
+static struct scx61_hook kptr_hooks[] = {
+	{ .name = "states_equal", .kind = SCX61_KPROBE, .ctx = SCX61_BPF, .optional = true,
+	  .why = "a larger verifier budget; small schedulers verify without it",
+	  .kp = &states_equal_kp },
+	{ .name = "map_check_btf", .kind = SCX61_KPROBE, .ctx = SCX61_BPF,
+	  .why = "kptrs in task storage, as from v6.2", .kp = &map_check_btf_kp },
+	{ .name = "bpf_selem_unlink_storage_nolock", .kind = SCX61_KPROBE, .ctx = SCX61_BPF,
+	  .why = "frees the kptrs of a task storage element", .kp = &selem_unlink_kp },
+	{ .name = "check_mem_access", .kind = SCX61_KRETPROBE, .ctx = SCX61_BPF,
+	  .why = "a referenced kptr loaded from a map is trusted, as from v6.2",
+	  .krp = &kptr_access_krp },
+	{ .name = "check_map_func_compatibility", .kind = SCX61_KRETPROBE, .ctx = SCX61_BPF,
+	  .why = "bpf_kptr_xchg() on task storage", .krp = &map_func_krp },
+};
+
 int __init scx61_kptr_init(void)
 {
-	int ret;
-
 	find_btf_id_fn = (void *)kallsyms_name_to_addr("bpf_find_btf_id");
 	find_dtor_kfunc_fn = (void *)kallsyms_name_to_addr("btf_find_dtor_kfunc");
 	try_get_module_fn = (void *)kallsyms_name_to_addr("btf_try_get_module");
@@ -498,17 +515,5 @@ int __init scx61_kptr_init(void)
 	if (!find_btf_id_fn || !find_dtor_kfunc_fn || !try_get_module_fn || !lookup_name_fn)
 		return -ENOENT;
 
-	/* Small schedulers verify without it. */
-	if (register_kprobe(&states_equal_kp))
-		pr_warn("droidspaces_scx: no larger verifier budget, large schedulers will not load\n");
-	ret = register_kprobe(&map_check_btf_kp);
-	if (ret)
-		return ret;
-	ret = register_kprobe(&selem_unlink_kp);
-	if (ret)
-		return ret;
-	ret = register_kretprobe(&kptr_access_krp);
-	if (ret)
-		return ret;
-	return register_kretprobe(&map_func_krp);
+	return scx61_hooks_register(kptr_hooks, ARRAY_SIZE(kptr_hooks));
 }

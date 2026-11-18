@@ -21,6 +21,7 @@
 #include "hint.h"
 #include "../gki-target.h"
 #include "port.h"
+#include "hooks.h"
 
 struct rq;
 struct task_struct *scx61_pick_next_task(struct rq *rq);
@@ -34,39 +35,37 @@ struct hrtimer;
 int scx61_bpf_timer_cb(struct hrtimer *hrtimer);
 u64 scx61_bpf_loop(u64 nr_loops, u64 callback_fn, u64 callback_ctx, u64 flags, u64 r5);
 
-struct scx_kprobe {
-	struct kprobe kp;
-	unsigned long replacement;
-};
-
-static int kp_pre(struct kprobe *kp, struct pt_regs *regs)
-{
-	instruction_pointer_set(regs, container_of(kp, struct scx_kprobe, kp)->replacement);
-	return 1;
-}
-
-#define SCX_KP(sym, fn) { .kp = { .symbol_name = sym, .pre_handler = kp_pre }, \
-			  .replacement = (unsigned long)(fn) }
-static struct scx_kprobe kps[] = {
-	SCX_KP("pick_next_task_idle", scx61_pick_next_task),
-	SCX_KP("put_prev_task_idle", scx61_put_prev_task),
+/* The idle class's methods, entered by moving the PC from a kprobe: the core
+ * calls them through the idle slot that the class sits in. Last in init,
+ * since nothing of the class runs before a scheduler is loaded anyway.
+ */
+static struct scx61_hook idle_hooks[] = {
+	SCX61_REDIRECT_HOOK("pick_next_task_idle", scx61_pick_next_task, SCX61_RQ_LOCKED, true,
+			    "the class's pick"),
+	SCX61_REDIRECT_HOOK("put_prev_task_idle", scx61_put_prev_task, SCX61_RQ_LOCKED, true,
+			    "the class's put_prev, deferred to our pick"),
 	/* The first instruction is a static branch site, which kprobes refuse. */
-	{ .kp = { .symbol_name = "set_next_task_idle", .offset = 4, .pre_handler = kp_pre },
-	  .replacement = (unsigned long)scx61_set_next_task },
-	SCX_KP("check_preempt_curr_idle", scx61_check_preempt_curr),
-	SCX_KP("task_tick_idle", scx61_task_tick),
-	SCX_KP("select_task_rq_idle", scx61_select_task_rq),
-	SCX_KP("update_curr_idle", scx61_update_curr),
+	{ .name = "set_next_task_idle", .kind = SCX61_REDIRECT, .ctx = SCX61_RQ_LOCKED, .hot = true,
+	  .why = "the class's set_next", .to = (unsigned long)scx61_set_next_task, .offset = 4 },
+	SCX61_REDIRECT_HOOK("check_preempt_curr_idle", scx61_check_preempt_curr, SCX61_RQ_LOCKED, true,
+			    "a wakeup of ours against a running task of ours"),
+	SCX61_REDIRECT_HOOK("task_tick_idle", scx61_task_tick, SCX61_RQ_LOCKED, true,
+			    "the class's tick"),
+	SCX61_REDIRECT_HOOK("select_task_rq_idle", scx61_select_task_rq, SCX61_PI_LOCKED, true,
+			    "ops.select_cpu() on wakeup"),
+	SCX61_REDIRECT_HOOK("update_curr_idle", scx61_update_curr, SCX61_RQ_LOCKED, true,
+			    "runtime accounting of the running task"),
 	/* see bpf-fixes.c */
-	SCX_KP("bpf_timer_cb", scx61_bpf_timer_cb),
-	SCX_KP("bpf_loop", scx61_bpf_loop),
+	SCX61_REDIRECT_HOOK("bpf_timer_cb", scx61_bpf_timer_cb, SCX61_BPF, false,
+			    "BPF timers call their callback without a kCFI type word"),
+	SCX61_REDIRECT_HOOK("bpf_loop", scx61_bpf_loop, SCX61_BPF, false,
+			    "bpf_loop() calls its callback without a kCFI type word"),
 };
 
 static int __init scx_port_init(void)
 {
 	struct kallrecon_hint hint = { .timeout_ms = 15000 };
 	const struct sched_class *idle, *fair;
-	unsigned int i;
 	int ret;
 
 	if (!ds_gki_target_supported()) {
@@ -138,13 +137,11 @@ static int __init scx_port_init(void)
 	ret = scx61_struct_ops_init();
 	if (ret)
 		pr_err("struct_ops: %d, no scheduler can be loaded\n", ret);
-	for (i = 0; i < ARRAY_SIZE(kps); i++) {
-		ret = register_kprobe(&kps[i].kp);
-		if (ret) {
-			pr_err("kprobe %s: %d\n", kps[i].kp.symbol_name, ret);
-			return 0;
-		}
-	}
+	/* A failure here leaves the module loaded and the class not entered:
+	 * it can no longer be unloaded, see scx61_glue_init().
+	 */
+	if (scx61_hooks_register(idle_hooks, ARRAY_SIZE(idle_hooks)))
+		return 0;
 	pr_info("sched_ext (6.12) is ready\n");
 	return 0;
 }
